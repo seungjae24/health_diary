@@ -3,10 +3,11 @@ import { addMonths, subMonths } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View, TextInput } from 'react-native';
+import { Alert, PanResponder, Platform, Pressable, StyleSheet, Text, View, TextInput } from 'react-native';
 
 import { ScreenFrame } from '../components/screen-frame';
 import {
+  ChoiceChip,
   EmptyState,
   FieldInput,
   MetricPill,
@@ -16,6 +17,7 @@ import {
 } from '../components/ui';
 import { useHealthData } from '../context/health-data-context';
 import { useGlobalUi } from '../context/global-ui-context';
+import { generateAiResponse } from '../services/ai';
 import { fontFamily, palette } from '../theme';
 import { buildWeightCalendar, getLatestWeight, getWeightChange } from '../utils/analytics';
 import { formatLongDate, formatMonthYear, formatTime, formatWeight, makeId, sortByDateDesc, todayDateKey, currentTimeKey } from '../utils/format';
@@ -49,8 +51,12 @@ export function WeightsScreen({ route, navigation }: any) {
   const [focusMonth, setFocusMonth] = useState(new Date());
   const [query, setQuery] = useState('');
   const [composerVisible, setComposerVisible] = useState(false);
+  const [selectedWeightDate, setSelectedWeightDate] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [draft, setDraft] = useState(createWeightDraft());
+  const [summaryPeriod, setSummaryPeriod] = useState<'today' | 'week' | 'month'>('today');
+  const [coachLoading, setCoachLoading] = useState(false);
+  const [coachText, setCoachText] = useState('');
 
   const shouldOpen = route?.params?.openComposer;
   const prefilledData = route?.params?.prefilledData;
@@ -70,11 +76,49 @@ export function WeightsScreen({ route, navigation }: any) {
   const latestWeight = getLatestWeight(store.weights);
   const weightChange = getWeightChange(store.weights, 14);
   const recentWeights = sortByDateDesc(store.weights).slice(0, 3);
+  const summaryWeights = React.useMemo(() => {
+    const today = todayDateKey();
+    if (summaryPeriod === 'today') {
+      return sortByDateDesc(store.weights).filter((record) => record.date === today);
+    }
+    const floorDate = new Date();
+    floorDate.setDate(floorDate.getDate() - (summaryPeriod === 'week' ? 6 : 29));
+    const floor = floorDate.toISOString().slice(0, 10);
+    return sortByDateDesc(store.weights).filter((record) => record.date >= floor);
+  }, [store.weights, summaryPeriod]);
+  const periodLatest = summaryWeights[0];
+  const periodOldest = summaryWeights[summaryWeights.length - 1];
+  const periodWeightDelta = periodLatest && periodOldest ? periodLatest.valueKg - periodOldest.valueKg : null;
+  const periodBodyFatDelta =
+    periodLatest && periodOldest && typeof periodLatest.bodyFatPercentage === 'number' && typeof periodOldest.bodyFatPercentage === 'number'
+      ? periodLatest.bodyFatPercentage - periodOldest.bodyFatPercentage
+      : null;
+  const periodMuscleDelta =
+    periodLatest && periodOldest && typeof periodLatest.skeletalMuscleMassKg === 'number' && typeof periodOldest.skeletalMuscleMassKg === 'number'
+      ? periodLatest.skeletalMuscleMassKg - periodOldest.skeletalMuscleMassKg
+      : null;
   const calendar = buildWeightCalendar(focusMonth, store.weights);
   const filteredWeights = sortByDateDesc(store.weights).filter((record) => {
     const haystack = `${record.date} ${record.valueKg} ${record.note ?? ''}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
+  const selectedDateWeights = selectedWeightDate
+    ? sortByDateDesc(store.weights).filter((record) => record.date === selectedWeightDate)
+    : [];
+  const calendarSwipe = React.useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 14 && Math.abs(gesture.dy) < 20,
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx > 40) {
+            setFocusMonth((current) => subMonths(current, 1));
+          } else if (gesture.dx < -40) {
+            setFocusMonth((current) => addMonths(current, 1));
+          }
+        },
+      }),
+    [],
+  );
 
   async function openComposer(initialData?: any, forcedImage?: string) {
     const draftBase = createWeightDraft();
@@ -260,6 +304,45 @@ export function WeightsScreen({ route, navigation }: any) {
     };
   })();
 
+  React.useEffect(() => {
+    async function buildWeightCoachSummary() {
+      const periodLabel = summaryPeriod === 'today' ? '오늘' : summaryPeriod === 'week' ? '최근 7일' : '최근 30일';
+      const lines = summaryWeights.length
+        ? summaryWeights
+            .slice(0, 8)
+            .map((record) => `${record.date}: ${record.valueKg}kg${typeof record.bodyFatPercentage === 'number' ? ` / 체지방 ${record.bodyFatPercentage}%` : ''}${typeof record.skeletalMuscleMassKg === 'number' ? ` / 골격근 ${record.skeletalMuscleMassKg}kg` : ''}`)
+            .join('\n')
+        : '기록 없음';
+      const localFallback = !summaryWeights.length
+        ? `${periodLabel} 체중 기록이 아직 없습니다. 같은 조건의 측정값이 2~3개만 쌓여도 감량인지 수분변동인지 구분하기 쉬워집니다.`
+        : periodBodyFatDelta !== null && periodBodyFatDelta > 0.4
+          ? `${periodLabel} 체중 변화보다 체지방 변화가 더 불리합니다. 현재 흐름은 체중 자체보다 조성 관리가 먼저 흔들리고 있는 신호에 가깝습니다.`
+          : periodMuscleDelta !== null && periodMuscleDelta > 0.2
+            ? `${periodLabel} 체중보다 골격근량 흐름이 안정적입니다. 숫자 변동이 있어도 체성분 방향은 나쁘지 않으니 측정 조건만 더 일정하게 맞추면 됩니다.`
+            : `${periodLabel} 기록은 체중 자체보다 측정 편차가 함께 섞여 있습니다. 같은 시간대와 같은 컨디션으로 비교 품질을 높이는 것이 우선입니다.`;
+      try {
+        setCoachLoading(true);
+        const text = await generateAiResponse(
+          store.aiSettings,
+          store,
+          `당신은 체성분 변화를 해석하는 코치입니다. 뻔한 말 금지, 숫자 근거 포함, 한국어 2~3문장 140자 안팎으로만 답하세요.
+${periodLabel} 체중/체성분 흐름을 평가하고, 가장 중요한 관리 포인트 1개만 말하세요.
+
+요약: 기록 ${summaryWeights.length}건, 최신 ${periodLatest?.valueKg ?? '-'}kg, 변화 ${periodWeightDelta !== null ? `${periodWeightDelta >= 0 ? '+' : ''}${periodWeightDelta.toFixed(1)}kg` : '기준 부족'}, 체지방 변화 ${periodBodyFatDelta !== null ? `${periodBodyFatDelta >= 0 ? '+' : ''}${periodBodyFatDelta.toFixed(1)}%` : '없음'}, 골격근 변화 ${periodMuscleDelta !== null ? `${periodMuscleDelta >= 0 ? '+' : ''}${periodMuscleDelta.toFixed(1)}kg` : '없음'}
+
+기록:
+${lines}`,
+        );
+        setCoachText(text);
+      } catch {
+        setCoachText(localFallback);
+      } finally {
+        setCoachLoading(false);
+      }
+    }
+    buildWeightCoachSummary();
+  }, [periodBodyFatDelta, periodLatest?.valueKg, periodMuscleDelta, periodWeightDelta, store, summaryPeriod, summaryWeights]);
+
   return (
     <>
       <ScreenFrame
@@ -272,43 +355,33 @@ export function WeightsScreen({ route, navigation }: any) {
         actionLabel="체중 추가"
         onAction={openAddMenu}
       >
-
-        <View style={styles.metricsRow}>
-          <MetricPill
-            label="최근 체중"
-            value={latestWeight ? formatWeight(latestWeight.valueKg) : '없음'}
-            tone="good"
-          />
-          <MetricPill
-            label="2주 변화"
-            value={
-              weightChange === null
-                ? '기록 부족'
-                : `${weightChange > 0 ? '+' : ''}${weightChange.toFixed(1)} kg`
-            }
-          />
-          <MetricPill label="총 기록 수" value={`${store.weights.length}건`} tone="warm" />
-        </View>
-
-        {bodyComment ? (
-          <SurfaceCard style={styles.coachCard}>
-            <View style={styles.coachHeader}>
-              <View style={[styles.coachBadge, bodyComment.tone === '칭찬' && styles.coachBadgeGood, bodyComment.tone === '혼냄' && styles.coachBadgeWarn]}>
-                <Text style={styles.coachBadgeText}>{bodyComment.tone}</Text>
-              </View>
-              <Text style={styles.coachTitle}>{bodyComment.headline}</Text>
+        <SurfaceCard style={styles.summaryCard}>
+          <View style={styles.coachHeader}>
+            <View>
+              <Text style={styles.summaryTitle}>Weight Coach Summary</Text>
+              <Text style={styles.summaryCaption}>체중 숫자보다 변화의 질을 짧고 정확하게 읽어줍니다.</Text>
             </View>
-            <Text style={styles.coachBody}>{bodyComment.body}</Text>
-            <Text style={styles.coachBody}>{bodyComment.longLine}</Text>
-            <Text style={styles.coachPlan}>다음 계획: {bodyComment.plan}</Text>
-          </SurfaceCard>
-        ) : null}
+            {coachLoading ? <ActivityIndicator size="small" color={palette.coral} /> : null}
+          </View>
+          <View style={styles.filterRow}>
+            <ChoiceChip label="오늘" selected={summaryPeriod === 'today'} onPress={() => setSummaryPeriod('today')} />
+            <ChoiceChip label="주간" selected={summaryPeriod === 'week'} onPress={() => setSummaryPeriod('week')} />
+            <ChoiceChip label="월간" selected={summaryPeriod === 'month'} onPress={() => setSummaryPeriod('month')} />
+          </View>
+          <View style={styles.metricsRow}>
+            <MetricPill label="기록" value={`${summaryWeights.length}건`} tone="good" />
+            <MetricPill label="최신 체중" value={periodLatest ? formatWeight(periodLatest.valueKg) : '없음'} />
+            <MetricPill label="순변화" value={periodWeightDelta === null ? '기준 부족' : `${periodWeightDelta > 0 ? '+' : ''}${periodWeightDelta.toFixed(1)} kg`} tone="warm" />
+          </View>
+          <Text style={styles.summaryBody}>{coachText || (bodyComment ? bodyComment.headline : '체중 흐름을 정리하고 있습니다.')}</Text>
+        </SurfaceCard>
 
+        <View {...calendarSwipe.panHandlers}>
         <SurfaceCard style={styles.calendarCard}>
           <View style={styles.monthHeader}>
-            <View>
+            <View style={styles.monthHeading}>
               <Text style={styles.monthLabel}>{formatMonthYear(focusMonth)}</Text>
-              <Text style={styles.monthCaption}>월별 이동을 통해 변화 추이를 확인하세요.</Text>
+              <Text style={styles.monthCaption}>좌우로 밀어 월을 넘기고 날짜별 흐름을 확인하세요.</Text>
             </View>
             <View style={styles.monthActions}>
               <Pressable onPress={() => setFocusMonth((current) => subMonths(current, 1))} style={styles.monthButton}>
@@ -330,29 +403,50 @@ export function WeightsScreen({ route, navigation }: any) {
 
           <View style={styles.calendarGrid}>
             {calendar.map((day) => (
-              <View
+              <Pressable
                 key={day.key}
+                onPress={() => {
+                  if (day.record) {
+                    setSelectedWeightDate(day.key);
+                  }
+                }}
                 style={[
-                  styles.dayCell,
+                  styles.weightDayCell,
                   !day.inMonth && styles.dayCellMuted,
-                  day.record && styles.dayCellFilled,
+                  day.record && styles.weightDayCellActive,
                 ]}
               >
                 <Text style={[styles.dayNumber, !day.inMonth && styles.dayNumberMuted]}>
                   {day.dayOfMonth}
                 </Text>
-                {day.record ? (
-                  <View style={styles.weightBadge}>
-                    <Text style={styles.weightBadgeText}>{day.record.valueKg.toFixed(1)}</Text>
-                  </View>
-                ) : null}
-              </View>
+                <View
+                  style={[
+                    styles.weightDayIndicator,
+                    !day.record && styles.weightDayIndicatorIdle,
+                  ]}
+                />
+              </Pressable>
             ))}
           </View>
         </SurfaceCard>
+        </View>
 
-        {filteredWeights.length ? (
-          filteredWeights.map((record) => (
+        <EmptyState
+          title={filteredWeights.length ? '달력에서 날짜를 눌러 체중 보기' : '체중 기록이 아직 없습니다'}
+          body={filteredWeights.length ? '메인 화면에서는 달력만 보고, 상세 기록은 날짜를 눌렀을 때만 열리도록 정리했어요.' : '체중을 추가하면 날짜별로 달력에서 바로 확인할 수 있어요.'}
+          actionLabel="기록 추가"
+          onAction={openAddMenu}
+        />
+      </ScreenFrame>
+
+      <ModalSheet
+        visible={Boolean(selectedWeightDate)}
+        title={selectedWeightDate ? `${formatLongDate(selectedWeightDate)} 체중` : '체중 기록'}
+        subtitle="해당 날짜의 체중과 체성분 기록만 모아서 볼 수 있어요."
+        onClose={() => setSelectedWeightDate(null)}
+      >
+        {selectedDateWeights.length ? (
+          selectedDateWeights.map((record) => (
             <SurfaceCard key={record.id} style={styles.weightRow}>
               <View style={styles.weightItemInfo}>
                 <View style={styles.recordDateRow}>
@@ -371,10 +465,11 @@ export function WeightsScreen({ route, navigation }: any) {
                 )}
               </View>
               <View style={styles.weightItemNoteWrap}>
-                <Text style={styles.weightRowNote} numberOfLines={2}>{record.note || '메모 없음'}</Text>
+                <Text style={styles.weightRowNote} numberOfLines={3}>{record.note || '메모 없음'}</Text>
                 <View style={{ flexDirection: 'row', gap: 12 }}>
                   <Pressable
                     onPress={() => {
+                      setSelectedWeightDate(null);
                       setDraft({
                         ...(record as any),
                         time: record.time || '',
@@ -405,14 +500,9 @@ export function WeightsScreen({ route, navigation }: any) {
             </SurfaceCard>
           ))
         ) : (
-          <EmptyState
-            title="검사 결과가 없습니다"
-            body="검색어를 변경하거나 새로운 체중을 기록해 보세요."
-            actionLabel="기록 추가"
-            onAction={openAddMenu}
-          />
+          <EmptyState title="기록 없음" body="이 날짜에는 체중 기록이 없어요." />
         )}
-      </ScreenFrame>
+      </ModalSheet>
 
       <ModalSheet
         visible={composerVisible}
@@ -552,8 +642,38 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  summaryCard: {
+    gap: 14,
+    backgroundColor: '#FFF9F6',
+    borderColor: '#F2DCCE',
+  },
+  summaryTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 18,
+    color: palette.ink,
+  },
+  summaryCaption: {
+    marginTop: 4,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.muted,
+  },
+  summaryBody: {
+    fontFamily: fontFamily.regular,
+    fontSize: 14,
+    lineHeight: 21,
+    color: palette.ink,
+  },
   calendarCard: {
     gap: 14,
+    backgroundColor: '#FFFDF7',
+    borderColor: '#F1E2C8',
   },
   coachCard: {
     gap: 10,
@@ -604,33 +724,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 12,
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  monthHeading: {
+    flex: 1,
+    minWidth: 0,
   },
   monthLabel: {
     fontFamily: fontFamily.bold,
-    fontSize: 24,
+    fontSize: 20,
     color: palette.ink,
   },
   monthCaption: {
     marginTop: 4,
     fontFamily: fontFamily.regular,
-    fontSize: 14,
+    fontSize: 13,
     color: palette.muted,
   },
   monthActions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
+    flexShrink: 0,
   },
   monthButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: palette.mist,
+    width: 40,
+    height: 40,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: palette.paper,
+    borderWidth: 1,
+    borderColor: '#ECDDBD',
   },
   weekdayRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 2,
   },
   weekdayLabel: {
     flex: 1,
@@ -638,52 +768,49 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.medium,
     fontSize: 12,
     color: palette.muted,
-    textTransform: 'uppercase',
   },
   calendarGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    borderRadius: 22,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: palette.stroke,
+    justifyContent: 'space-between',
+    rowGap: 8,
   },
-  dayCell: {
-    width: '14.2857%',
-    minHeight: 78,
-    paddingHorizontal: 4,
-    paddingVertical: 7,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: palette.stroke,
+  weightDayCell: {
+    width: '13.3%',
+    minWidth: 0,
+    aspectRatio: 0.76,
+    borderRadius: 15,
+    paddingVertical: 6,
+    paddingHorizontal: 3,
+    borderWidth: 1,
+    borderColor: '#F1E6CF',
     backgroundColor: palette.paper,
-    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   dayCellMuted: {
-    backgroundColor: '#F4F4EE',
+    opacity: 0.45,
   },
-  dayCellFilled: {
-    backgroundColor: '#F3FFF7',
+  weightDayCellActive: {
+    backgroundColor: '#FFF5EF',
+    borderColor: '#F3B5A5',
   },
   dayNumber: {
-    fontFamily: fontFamily.medium,
-    fontSize: 12,
+    fontFamily: fontFamily.bold,
+    fontSize: 11,
     color: palette.ink,
   },
   dayNumberMuted: {
-    color: '#A2A9A0',
+    color: palette.muted,
   },
-  weightBadge: {
-    backgroundColor: palette.mint,
-    borderRadius: 10,
-    paddingHorizontal: 4,
-    paddingVertical: 5,
+  weightDayIndicator: {
+    width: 18,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: palette.coral,
   },
-  weightBadgeText: {
-    fontFamily: fontFamily.bold,
-    fontSize: 11,
-    color: palette.paper,
-    textAlign: 'center',
+  weightDayIndicatorIdle: {
+    backgroundColor: '#E9DED1',
   },
   weightRow: {
     flexDirection: 'row',

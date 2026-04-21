@@ -8,7 +8,10 @@ export const dietPhaseMeta: Record<
   DietPhase,
   {
     label: string;
-    calorieDelta: number;
+    calorieMultiplier: number;
+    proteinRange: [number, number];
+    fatRange: [number, number];
+    carbRange: [number, number];
     proteinMultiplier: number;
     fatMultiplier: number;
     coachLabel: string;
@@ -16,24 +19,33 @@ export const dietPhaseMeta: Record<
 > = {
   lean: {
     label: 'Lean',
-    calorieDelta: -320,
+    calorieMultiplier: 0.85,
+    proteinRange: [1.8, 2.4],
+    fatRange: [0.6, 0.8],
+    carbRange: [2, 4],
     proteinMultiplier: 2.0,
-    fatMultiplier: 0.8,
-    coachLabel: '체지방을 줄이면서 근손실을 최소화하는 단계',
+    fatMultiplier: 0.7,
+    coachLabel: '감량기라서 단백질은 높게, 탄수는 상대적으로 낮게 잡는 편입니다.',
   },
   'lean-mass-up': {
     label: 'Lean mass up',
-    calorieDelta: 140,
-    proteinMultiplier: 1.9,
-    fatMultiplier: 0.9,
-    coachLabel: '체지방 증가는 억제하면서 근육량을 서서히 늘리는 단계',
+    calorieMultiplier: 1.075,
+    proteinRange: [1.6, 2.2],
+    fatRange: [0.8, 1.0],
+    carbRange: [4, 6],
+    proteinMultiplier: 1.8,
+    fatMultiplier: 0.8,
+    coachLabel: '가장 무난하고 추천하기 좋은 구간입니다. 운동 수행능력과 체지방 관리의 균형이 좋습니다.',
   },
   'bulk-up': {
     label: 'Bulk up',
-    calorieDelta: 320,
-    proteinMultiplier: 1.8,
-    fatMultiplier: 1.0,
-    coachLabel: '훈련 퍼포먼스와 체중 증가를 우선하는 단계',
+    calorieMultiplier: 1.15,
+    proteinRange: [1.6, 2.0],
+    fatRange: [0.8, 1.2],
+    carbRange: [5, 8],
+    proteinMultiplier: 1.7,
+    fatMultiplier: 0.9,
+    coachLabel: '벌크는 단백질을 무작정 올리기보다 총칼로리와 탄수 증가가 더 중요합니다.',
   },
 };
 
@@ -54,6 +66,12 @@ export type MacroTargetSummary = {
   carbMultiplier: number;
   proteinMultiplier: number;
   fatMultiplier: number;
+  carbRange: [number, number];
+  proteinRange: [number, number];
+  fatRange: [number, number];
+  carbsRangeG: [number, number];
+  proteinRangeG: [number, number];
+  fatRangeG: [number, number];
   maintenanceCalories: number;
   activityMultiplier: number;
   leanMassKg?: number;
@@ -113,18 +131,12 @@ function resolveLeanMassKg(weight: WeightRecord | undefined) {
   return undefined;
 }
 
-function getActivityMultiplier(workoutMinutes: number) {
-  if (workoutMinutes < 60) return 1.32;
-  if (workoutMinutes < 180) return 1.45;
-  if (workoutMinutes < 360) return 1.58;
-  return 1.72;
-}
-
 function getMissingProfileFields(store: HealthStore) {
   const missing: string[] = [];
   if (!store.profile.heightCm) missing.push('키');
   if (!store.profile.birthDate) missing.push('생년월일');
   if (!store.profile.sex) missing.push('성별');
+  if (!store.profile.activityLevel) missing.push('활동량');
   if (!store.weights.length) missing.push('최근 체중');
   return missing;
 }
@@ -177,29 +189,49 @@ export function getNutritionTargets(store: HealthStore): MacroTargetSummary | nu
   }
   const age = calculateAge(store.profile.birthDate) ?? 30;
   const sex = store.profile.sex || 'male';
-  const weeklyMinutes = getWorkoutMinutes(store.workouts, 7);
-  const activityMultiplier = getActivityMultiplier(weeklyMinutes);
+  const activityMultiplier = Number(store.profile.activityLevel || 0);
   const phase = store.profile.dietPhase || 'lean';
   const phaseConfig = dietPhaseMeta[phase];
+  if (!activityMultiplier) {
+    return null;
+  }
 
-  const bmr = leanMassKg
-    ? 370 + 21.6 * leanMassKg
-    : 10 * weightKg + 6.25 * heightCm - 5 * age + (sex === 'female' ? -161 : 5);
+  const bmr = 10 * weightKg + 6.25 * heightCm - 5 * age + (sex === 'female' ? -161 : 5);
 
   const maintenanceCalories = bmr * activityMultiplier;
-  const calories = maintenanceCalories + phaseConfig.calorieDelta;
-  const proteinG = weightKg * phaseConfig.proteinMultiplier;
-  const fatG = Math.max(45, weightKg * phaseConfig.fatMultiplier);
-  const carbsG = Math.max(120, (calories - proteinG * 4 - fatG * 9) / 4);
+  const calories = maintenanceCalories * phaseConfig.calorieMultiplier;
+  const proteinMultiplier = phaseConfig.proteinMultiplier;
+  const fatMultiplier = phaseConfig.fatMultiplier;
+  const proteinRangeG: [number, number] = [
+    roundValue(weightKg * phaseConfig.proteinRange[0]),
+    roundValue(weightKg * phaseConfig.proteinRange[1]),
+  ];
+  const fatRangeG: [number, number] = [
+    roundValue(weightKg * phaseConfig.fatRange[0]),
+    roundValue(weightKg * phaseConfig.fatRange[1]),
+  ];
+  const carbsRangeG: [number, number] = [
+    roundValue(weightKg * phaseConfig.carbRange[0]),
+    roundValue(weightKg * phaseConfig.carbRange[1]),
+  ];
+  const proteinG = roundValue(weightKg * proteinMultiplier);
+  const fatG = roundValue(weightKg * fatMultiplier);
+  const carbsG = roundValue(Math.max(0, (calories - proteinG * 4 - fatG * 9) / 4));
 
   return {
     calories: roundValue(calories, 0),
     carbsG: roundValue(carbsG),
     proteinG: roundValue(proteinG),
     fatG: roundValue(fatG),
-    carbMultiplier: roundValue(carbsG / weightKg, 2),
-    proteinMultiplier: phaseConfig.proteinMultiplier,
-    fatMultiplier: phaseConfig.fatMultiplier,
+    carbMultiplier: roundValue(weightKg ? carbsG / weightKg : 0, 2),
+    proteinMultiplier: roundValue(proteinMultiplier, 2),
+    fatMultiplier: roundValue(fatMultiplier, 2),
+    carbRange: phaseConfig.carbRange,
+    proteinRange: phaseConfig.proteinRange,
+    fatRange: phaseConfig.fatRange,
+    carbsRangeG,
+    proteinRangeG,
+    fatRangeG,
     maintenanceCalories: roundValue(maintenanceCalories, 0),
     activityMultiplier: roundValue(activityMultiplier, 2),
     leanMassKg: leanMassKg ? roundValue(leanMassKg) : undefined,
@@ -310,7 +342,7 @@ export function getMacroCoachSummary(store: HealthStore): MacroCoachSummary {
     { key: '지방', progress: progress.fat, remaining: remaining.fatG },
   ].sort((left, right) => left.progress - right.progress)[0];
 
-  const headline = `${targets.phaseLabel} 기준으로 단백질은 체중 x ${targets.proteinMultiplier}, 탄수화물은 체중 x ${targets.carbMultiplier}, 지방은 체중 x ${targets.fatMultiplier}를 적용해 단백질 ${targets.proteinG}g, 탄수화물 ${targets.carbsG}g, 지방 ${targets.fatG}g를 목표로 잡았어요.`;
+  const headline = `${targets.phaseLabel} 기준 권장 범위는 단백질 체중 x ${targets.proteinRange[0]}~${targets.proteinRange[1]}, 지방 x ${targets.fatRange[0]}~${targets.fatRange[1]}, 탄수화물 x ${targets.carbRange[0]}~${targets.carbRange[1]}예요. 오늘 기본 목표는 ${Math.round(targets.calories)}kcal, 탄수화물 ${targets.carbsG}g, 단백질 ${targets.proteinG}g, 지방 ${targets.fatG}g로 잡았어요.`;
   const body = `현재는 단백질 ${roundValue(consumed.proteinG)}g, 탄수화물 ${roundValue(consumed.carbsG)}g, 지방 ${roundValue(consumed.fatG)}g를 채웠고 ${lowestMacro.key}이 가장 부족해 보여요.`;
   const calorieBurnEstimate = getDailyBurnEstimate(store) || 0;
   const calorieBalance = roundValue(consumed.calories - calorieBurnEstimate, 0);

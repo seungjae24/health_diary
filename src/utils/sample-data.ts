@@ -18,6 +18,8 @@ function createDefaultSettings(): AiSettings {
 export function createDefaultStore(): HealthStore {
   return {
     meals: [],
+    mealPresets: [],
+    workoutRoutines: [],
     workouts: [],
     workoutActivities: defaultWorkoutActivities,
     bookmarkedExercises: [],
@@ -29,6 +31,7 @@ export function createDefaultStore(): HealthStore {
       sex: '',
       heightCm: '',
       birthDate: '',
+      activityLevel: '',
       dietPhase: 'lean',
     },
     aiSettings: createDefaultSettings(),

@@ -32,6 +32,7 @@ export function SettingsModal({
         color: 'mint' as SupplementPlan['color'],
     });
     const [showKey, setShowKey] = useState(false);
+    const [activeSection, setActiveSection] = useState<'profile' | 'supplements' | 'ai' | 'backup'>('profile');
     const [connectionStatus, setConnectionStatus] = useState<{
         gemini: 'idle' | 'checking' | 'ok' | 'error';
         openai: 'idle' | 'checking' | 'ok' | 'error';
@@ -63,6 +64,7 @@ export function SettingsModal({
                 openai: 'idle',
                 groq: 'idle',
             });
+            setActiveSection('profile');
         }
     }, [visible, store.aiSettings, store.profile, store.supplements]);
 
@@ -318,18 +320,78 @@ export function SettingsModal({
     }
 
     const age = calculateAge(profile.birthDate);
+    const activityLabel =
+        profile.activityLevel === '1.2'
+            ? '거의 운동 안 함'
+            : profile.activityLevel === '1.375'
+                ? '주 1~3회'
+                : profile.activityLevel === '1.55'
+                    ? '주 3~5회'
+                    : profile.activityLevel === '1.725'
+                        ? '주 6~7회'
+                        : profile.activityLevel === '1.9'
+                            ? '운동량 매우 많음'
+                            : '미설정';
+    const phaseLabel =
+        profile.dietPhase === 'lean'
+            ? 'Lean'
+            : profile.dietPhase === 'lean-mass-up'
+                ? 'Lean mass up'
+                : 'Bulk up';
 
     return (
         <ModalSheet
             visible={visible}
             title="환경 설정"
-            subtitle="AI 설정 및 API 키를 안전하게 관리하세요."
+            subtitle="기록 기준과 AI 연결을 한 화면에서 정리합니다."
             onClose={onClose}
         >
+            <SurfaceCard style={styles.heroCard}>
+                <View style={styles.heroHeader}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.heroTitle}>빠른 요약</Text>
+                        <Text style={styles.heroCaption}>긴 설명보다 지금 중요한 기준부터 위에 모아뒀어요.</Text>
+                    </View>
+                    <Feather name="settings" size={18} color={palette.mintDeep} />
+                </View>
+                <View style={styles.heroPillRow}>
+                    <View style={styles.heroPill}>
+                        <Text style={styles.heroPillLabel}>나이</Text>
+                        <Text style={styles.heroPillValue}>{age === null ? '미설정' : `${age}세`}</Text>
+                    </View>
+                    <View style={styles.heroPill}>
+                        <Text style={styles.heroPillLabel}>활동량</Text>
+                        <Text style={styles.heroPillValue}>{activityLabel}</Text>
+                    </View>
+                    <View style={styles.heroPill}>
+                        <Text style={styles.heroPillLabel}>목표</Text>
+                        <Text style={styles.heroPillValue}>{phaseLabel}</Text>
+                    </View>
+                </View>
+            </SurfaceCard>
+            <View style={styles.sectionNav}>
+                <Pressable style={[styles.sectionNavItem, activeSection === 'profile' && styles.sectionNavItemActive]} onPress={() => setActiveSection('profile')}>
+                    <Feather name="user" size={16} color={activeSection === 'profile' ? palette.mintDeep : palette.muted} />
+                    <Text style={[styles.sectionNavText, activeSection === 'profile' && styles.sectionNavTextActive]}>내 정보</Text>
+                </Pressable>
+                <Pressable style={[styles.sectionNavItem, activeSection === 'supplements' && styles.sectionNavItemActive]} onPress={() => setActiveSection('supplements')}>
+                    <Feather name="plus-square" size={16} color={activeSection === 'supplements' ? palette.mintDeep : palette.muted} />
+                    <Text style={[styles.sectionNavText, activeSection === 'supplements' && styles.sectionNavTextActive]}>영양제</Text>
+                </Pressable>
+                <Pressable style={[styles.sectionNavItem, activeSection === 'ai' && styles.sectionNavItemActive]} onPress={() => setActiveSection('ai')}>
+                    <Feather name="cpu" size={16} color={activeSection === 'ai' ? palette.mintDeep : palette.muted} />
+                    <Text style={[styles.sectionNavText, activeSection === 'ai' && styles.sectionNavTextActive]}>AI</Text>
+                </Pressable>
+                <Pressable style={[styles.sectionNavItem, activeSection === 'backup' && styles.sectionNavItemActive]} onPress={() => setActiveSection('backup')}>
+                    <Feather name="archive" size={16} color={activeSection === 'backup' ? palette.mintDeep : palette.muted} />
+                    <Text style={[styles.sectionNavText, activeSection === 'backup' && styles.sectionNavTextActive]}>백업</Text>
+                </Pressable>
+            </View>
+            {activeSection === 'profile' ? (
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>내 정보</Text>
                 <Text style={styles.sectionCaption}>
-                    성별, 키, 생년월일을 입력해 두면 건강 기록과 목표를 해석할 때 기준 정보로 활용하기 좋습니다.
+                    체중, 식단, 운동 해석의 기준이 되는 값입니다.
                 </Text>
                 <SurfaceCard style={styles.card}>
                     <View style={styles.choiceRow}>
@@ -363,6 +425,39 @@ export function SettingsModal({
                         onChangeText={(birthDate) => setProfile((current) => ({ ...current, birthDate }))}
                     />
                     <View style={styles.goalBlock}>
+                        <Text style={styles.goalLabel}>활동량</Text>
+                        <View style={styles.choiceWrap}>
+                            <ChoiceChip
+                                label="1.2"
+                                selected={profile.activityLevel === '1.2'}
+                                onPress={() => setProfile((current) => ({ ...current, activityLevel: '1.2' }))}
+                            />
+                            <ChoiceChip
+                                label="1.375"
+                                selected={profile.activityLevel === '1.375'}
+                                onPress={() => setProfile((current) => ({ ...current, activityLevel: '1.375' }))}
+                            />
+                            <ChoiceChip
+                                label="1.55"
+                                selected={profile.activityLevel === '1.55'}
+                                onPress={() => setProfile((current) => ({ ...current, activityLevel: '1.55' }))}
+                            />
+                            <ChoiceChip
+                                label="1.725"
+                                selected={profile.activityLevel === '1.725'}
+                                onPress={() => setProfile((current) => ({ ...current, activityLevel: '1.725' }))}
+                            />
+                            <ChoiceChip
+                                label="1.9"
+                                selected={profile.activityLevel === '1.9'}
+                                onPress={() => setProfile((current) => ({ ...current, activityLevel: '1.9' }))}
+                            />
+                        </View>
+                        <Text style={styles.ageHint}>
+                            {profile.activityLevel ? activityLabel : '활동량을 선택하면 유지칼로리 계산이 더 정확해집니다.'}
+                        </Text>
+                    </View>
+                    <View style={styles.goalBlock}>
                         <Text style={styles.goalLabel}>현재 목표</Text>
                         <View style={styles.choiceWrap}>
                             <ChoiceChip
@@ -387,59 +482,64 @@ export function SettingsModal({
                     </Text>
                 </SurfaceCard>
             </View>
+            ) : null}
 
+            {activeSection === 'ai' ? (
             <View style={styles.section}>
-                <Text style={styles.sectionTitle}>AI 서비스 제공자</Text>
+                <Text style={styles.sectionTitle}>AI 모드</Text>
                 <Text style={styles.sectionCaption}>
-                    홈 화면 질문하기와 목표 분석에 사용할 기본 AI를 선택합니다.
+                    기본 대화용 AI와 사진 분석용 AI를 나눠서 고를 수 있습니다.
                 </Text>
-                <View style={styles.choiceRow}>
-                    <ChoiceChip
-                        label="Gemini (Google)"
-                        selected={settings.provider === 'gemini'}
-                        onPress={() => setSettings(s => ({ ...s, provider: 'gemini' }))}
-                    />
-                    <ChoiceChip
-                        label="OpenAI"
-                        selected={settings.provider === 'openai'}
-                        onPress={() => setSettings(s => ({ ...s, provider: 'openai' }))}
-                    />
-                </View>
+                <SurfaceCard style={styles.card}>
+                    <View style={styles.goalBlock}>
+                        <Text style={styles.goalLabel}>기본 AI</Text>
+                        <View style={styles.choiceWrap}>
+                            <ChoiceChip
+                                label="Gemini"
+                                selected={settings.provider === 'gemini'}
+                                onPress={() => setSettings(s => ({ ...s, provider: 'gemini' }))}
+                            />
+                            <ChoiceChip
+                                label="OpenAI"
+                                selected={settings.provider === 'openai'}
+                                onPress={() => setSettings(s => ({ ...s, provider: 'openai' }))}
+                            />
+                        </View>
+                    </View>
+                    <View style={styles.goalBlock}>
+                        <Text style={styles.goalLabel}>사진 분석 AI</Text>
+                        <View style={styles.choiceWrap}>
+                            <ChoiceChip
+                                label="Groq"
+                                selected={settings.imageAnalysisProvider === 'groq'}
+                                onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'groq' }))}
+                            />
+                            <ChoiceChip
+                                label="Gemini"
+                                selected={settings.imageAnalysisProvider === 'gemini'}
+                                onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'gemini' }))}
+                            />
+                            <ChoiceChip
+                                label="OpenAI"
+                                selected={settings.imageAnalysisProvider === 'openai'}
+                                onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'openai' }))}
+                            />
+                            <ChoiceChip
+                                label="비교"
+                                selected={settings.imageAnalysisProvider === 'compare'}
+                                onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'compare' }))}
+                            />
+                        </View>
+                    </View>
+                </SurfaceCard>
             </View>
+            ) : null}
 
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>이미지 분석 제공자</Text>
-                <Text style={styles.sectionCaption}>
-                    사진 첨부 AI 분석에 사용할 엔진입니다. 현재는 Groq를 권장합니다. `비교`를 선택하면 사용 가능한 엔진들을 함께 실행해 더 많은 값을 뽑은 결과를 우선 사용합니다. Meals의 `AI 분석용 설명`도 이제 연결된 OpenAI, Groq, Gemini 중 가능한 엔진으로 계산합니다.
-                </Text>
-                <View style={styles.choiceRow}>
-                    <ChoiceChip
-                        label="Groq (권장)"
-                        selected={settings.imageAnalysisProvider === 'groq'}
-                        onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'groq' }))}
-                    />
-                    <ChoiceChip
-                        label="Gemini"
-                        selected={settings.imageAnalysisProvider === 'gemini'}
-                        onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'gemini' }))}
-                    />
-                    <ChoiceChip
-                        label="OpenAI"
-                        selected={settings.imageAnalysisProvider === 'openai'}
-                        onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'openai' }))}
-                    />
-                    <ChoiceChip
-                        label="비교"
-                        selected={settings.imageAnalysisProvider === 'compare'}
-                        onPress={() => setSettings(s => ({ ...s, imageAnalysisProvider: 'compare' }))}
-                    />
-                </View>
-            </View>
-
+            {activeSection === 'supplements' ? (
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>영양제 / 약 체크</Text>
                 <Text style={styles.sectionCaption}>
-                    매일 챙겨 먹어야 하는 영양제나 약을 등록하면 홈 화면에서 시간대별 체크가 가능합니다.
+                    홈 화면에서 체크할 복용 항목을 등록합니다.
                 </Text>
                 <SurfaceCard style={styles.card}>
                     {supplements.length ? (
@@ -502,11 +602,13 @@ export function SettingsModal({
                     </View>
                 </SurfaceCard>
             </View>
+            ) : null}
 
+            {activeSection === 'backup' ? (
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>데이터 백업 / 복원</Text>
                 <Text style={styles.sectionCaption}>
-                    웹에서 작성한 기록을 APK로 옮길 때 쓰는 기능입니다. 백업에는 식사, 운동, 체중, 목표, 영양제, 설정값이 포함되고 API 키는 보안상 제외됩니다.
+                    웹 기록을 APK로 옮길 때 쓰는 기능입니다. API 키는 백업에 포함되지 않습니다.
                 </Text>
                 <SurfaceCard style={styles.card}>
                     <View style={styles.backupActions}>
@@ -545,7 +647,10 @@ export function SettingsModal({
                     />
                 </SurfaceCard>
             </View>
+            ) : null}
 
+            {activeSection === 'ai' ? (
+            <>
             <SurfaceCard style={styles.card}>
                 <View style={styles.cardHeader}>
                     <Feather name="cpu" size={18} color={palette.mintDeep} />
@@ -622,6 +727,8 @@ export function SettingsModal({
                 />
                 <PrimaryButton label="Groq 연결 확인" onPress={() => verifyService('groq')} icon="shield" variant="outline" />
             </SurfaceCard>
+            </>
+            ) : null}
 
             <PrimaryButton label="설정 저장하기" onPress={handleSave} icon="check" />
         </ModalSheet>
@@ -629,6 +736,84 @@ export function SettingsModal({
 }
 
 const styles = StyleSheet.create({
+    heroCard: {
+        gap: 14,
+        padding: 18,
+        backgroundColor: '#F7FBF8',
+        borderColor: '#D8E9DE',
+    },
+    heroHeader: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    heroTitle: {
+        fontFamily: fontFamily.bold,
+        fontSize: 18,
+        color: palette.ink,
+    },
+    heroCaption: {
+        marginTop: 4,
+        fontFamily: fontFamily.regular,
+        fontSize: 13,
+        lineHeight: 19,
+        color: palette.muted,
+    },
+    heroPillRow: {
+        flexDirection: 'row',
+        gap: 10,
+        flexWrap: 'wrap',
+    },
+    heroPill: {
+        minWidth: 96,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 16,
+        backgroundColor: palette.paper,
+        borderWidth: 1,
+        borderColor: palette.stroke,
+    },
+    heroPillLabel: {
+        fontFamily: fontFamily.medium,
+        fontSize: 11,
+        color: palette.muted,
+    },
+    heroPillValue: {
+        marginTop: 3,
+        fontFamily: fontFamily.bold,
+        fontSize: 13,
+        color: palette.ink,
+    },
+    sectionNav: {
+        flexDirection: 'row',
+        gap: 10,
+        flexWrap: 'wrap',
+        marginBottom: 4,
+    },
+    sectionNavItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 16,
+        backgroundColor: palette.paper,
+        borderWidth: 1,
+        borderColor: palette.stroke,
+    },
+    sectionNavItemActive: {
+        backgroundColor: '#EDF7F1',
+        borderColor: '#D3E9DA',
+    },
+    sectionNavText: {
+        fontFamily: fontFamily.medium,
+        fontSize: 13,
+        color: palette.muted,
+    },
+    sectionNavTextActive: {
+        color: palette.mintDeep,
+    },
     section: {
         gap: 12,
         marginBottom: 8,
@@ -658,7 +843,7 @@ const styles = StyleSheet.create({
     },
     card: {
         gap: 16,
-        padding: 20,
+        padding: 18,
     },
     backupActions: {
         gap: 10,

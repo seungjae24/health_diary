@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Feather } from '@expo/vector-icons';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ScreenFrame } from '../components/screen-frame';
 import { SurfaceCard, FieldInput, PrimaryButton, ModalSheet } from '../components/ui';
@@ -9,7 +9,7 @@ import { useGlobalUi } from '../context/global-ui-context';
 import { generateAiResponse } from '../services/ai';
 import { fontFamily, palette } from '../theme';
 import { shiftDateKey, todayDateKey } from '../utils/format';
-import { dietPhaseMeta, getMacroCoachSummary } from '../utils/nutrition';
+import { dietPhaseMeta, getMacroCoachSummary, getMacroTotalsForDate, getNutritionTargets } from '../utils/nutrition';
 
 export function HomeScreen() {
   const { store, toggleSupplementDose } = useHealthData();
@@ -37,6 +37,54 @@ export function HomeScreen() {
   const latestWeight = store.weights[0]?.valueKg;
   const coachSummary = getMacroCoachSummary(store);
   const phase = dietPhaseMeta[store.profile.dietPhase || 'lean'];
+  const nutritionTargets = getNutritionTargets(store);
+  const todayNutrition = getMacroTotalsForDate(store.meals);
+  const weightDeltaText =
+    todaySum.weight && yesterdaySum.weight
+      ? `${todaySum.weight > yesterdaySum.weight ? '+' : ''}${(todaySum.weight - yesterdaySum.weight).toFixed(1)}kg`
+      : latestWeight
+        ? `${latestWeight}kg`
+        : '기록 없음';
+  const macroCards = nutritionTargets
+    ? [
+        {
+          key: 'calories',
+          label: '칼로리',
+          color: '#F28D3A',
+          current: todayNutrition.calories,
+          target: nutritionTargets.calories,
+          range: null,
+          unit: 'kcal',
+        },
+        {
+          key: 'protein',
+          label: '단백질',
+          color: palette.mintDeep,
+          current: todayNutrition.proteinG,
+          target: nutritionTargets.proteinG,
+          range: nutritionTargets.proteinRangeG,
+          unit: 'g',
+        },
+        {
+          key: 'carbs',
+          label: '탄수화물',
+          color: '#4A86FF',
+          current: todayNutrition.carbsG,
+          target: nutritionTargets.carbsG,
+          range: nutritionTargets.carbsRangeG,
+          unit: 'g',
+        },
+        {
+          key: 'fat',
+          label: '지방',
+          color: palette.coral,
+          current: todayNutrition.fatG,
+          target: nutritionTargets.fatG,
+          range: nutritionTargets.fatRangeG,
+          unit: 'g',
+        },
+      ]
+    : [];
 
   const [query, setQuery] = useState('');
   const [isAsking, setIsAsking] = useState(false);
@@ -101,43 +149,53 @@ export function HomeScreen() {
         </View>
       </SurfaceCard>
 
-      <SurfaceCard style={styles.coachCard}>
-        <View style={styles.coachHeader}>
-          <View style={styles.coachIcon}>
-            <Feather name="cpu" size={20} color={palette.paper} />
-          </View>
-          <View style={styles.coachHeaderText}>
-            <Text style={styles.coachEyebrow}>Smart Fuel Coach</Text>
-            <Text style={styles.coachTitle}>{phase.label}</Text>
+      <SurfaceCard style={styles.nutritionCard}>
+        <View style={styles.nutritionHeader}>
+          <View style={styles.nutritionHeaderText}>
+            <Text style={styles.nutritionEyebrow}>오늘의 탄단지 + 칼로리</Text>
+            <Text style={styles.nutritionTitle}>{phase.label}</Text>
+            <Text style={styles.nutritionBody}>
+              {nutritionTargets
+                ? `${phase.coachLabel}`
+                : '체중과 프로필을 입력하면 목표 범위를 자동 계산해 드려요.'}
+            </Text>
           </View>
           <View style={styles.phaseChip}>
             <Text style={styles.phaseChipText}>{phase.label}</Text>
           </View>
         </View>
 
-        <Text style={styles.coachHeadline}>{coachSummary.headline}</Text>
-        <Text style={styles.coachBody}>{coachSummary.body}</Text>
-        <View style={styles.calorieLine}>
-          <Feather name="fire" size={16} color="#F2C46A" />
-          <Text style={styles.calorieLineText}>{coachSummary.calorieLine}</Text>
+        <View style={styles.calorieLineBright}>
+          <Feather name="activity" size={16} color="#F28D3A" />
+          <Text style={styles.calorieLineBrightText}>{coachSummary.calorieLine}</Text>
         </View>
 
-        {coachSummary.targets ? (
-          <View style={styles.macroTargetRow}>
-            <CoachMetricCard label="단백질" value={`${Math.round(coachSummary.targets.proteinG)}g`} caption={`현재 ${Math.round(coachSummary.consumed.proteinG)}g`} tone="mint" />
-            <CoachMetricCard label="탄수화물" value={`${Math.round(coachSummary.targets.carbsG)}g`} caption={`현재 ${Math.round(coachSummary.consumed.carbsG)}g`} tone="sky" />
-            <CoachMetricCard label="지방" value={`${Math.round(coachSummary.targets.fatG)}g`} caption={`현재 ${Math.round(coachSummary.consumed.fatG)}g`} tone="coral" />
+        {nutritionTargets ? (
+          <View style={styles.ringsRow}>
+            {macroCards.map((macro) => (
+              <MacroProgressCard
+                key={macro.key}
+                label={macro.label}
+                color={macro.color}
+                current={macro.current}
+                target={macro.target}
+                range={macro.range}
+                unit={macro.unit}
+              />
+            ))}
           </View>
         ) : null}
 
-        <View style={styles.tipList}>
-          {coachSummary.recommendations.map((recommendation) => (
-            <View key={recommendation} style={styles.tipItem}>
-              <View style={styles.tipBullet} />
-              <Text style={styles.tipText}>{recommendation}</Text>
-            </View>
-          ))}
-        </View>
+        {nutritionTargets ? (
+          <View style={styles.rangeSummaryBox}>
+            <Text style={styles.rangeSummaryTitle}>권장 범위</Text>
+            <Text style={styles.rangeSummaryText}>
+              단백질 {nutritionTargets.proteinRange[0]}~{nutritionTargets.proteinRange[1]} g/kg ·
+              지방 {nutritionTargets.fatRange[0]}~{nutritionTargets.fatRange[1]} g/kg ·
+              탄수화물 {nutritionTargets.carbRange[0]}~{nutritionTargets.carbRange[1]} g/kg
+            </Text>
+          </View>
+        ) : null}
 
         {coachSummary.missingProfileFields.length ? (
           <View style={styles.warningBox}>
@@ -148,23 +206,14 @@ export function HomeScreen() {
       </SurfaceCard>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>어제의 기록</Text>
-        <View style={styles.row}>
-          <SummaryCard icon="coffee" label="식사" value={`${yesterdaySum.meals}`} subValue="완료" variant="muted" />
-          <SummaryCard icon="zap" label="운동" value={`${yesterdaySum.workouts}`} subValue="수행" variant="muted" />
-          <SummaryCard icon="heart" label="체중" value={yesterdaySum.weight ? `${yesterdaySum.weight}kg` : '--'} subValue="어제" variant="muted" />
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>지난 7일간의 통계</Text>
-        <SurfaceCard style={styles.weekCard}>
+        <Text style={styles.sectionTitle}>이번 흐름</Text>
+        <SurfaceCard style={styles.flowCard}>
           <View style={styles.weekItem}>
             <View style={styles.weekIconBound}>
               <Feather name="coffee" size={16} color={palette.mintDeep} />
             </View>
             <View>
-              <Text style={styles.weekLabel}>영양 상태</Text>
+              <Text style={styles.weekLabel}>식사 밀도</Text>
               <Text style={styles.weekValue}>{weekMeals}번의 식사 기록</Text>
             </View>
           </View>
@@ -173,7 +222,7 @@ export function HomeScreen() {
               <Feather name="zap" size={16} color={palette.coral} />
             </View>
             <View>
-              <Text style={styles.weekLabel}>활동량</Text>
+              <Text style={styles.weekLabel}>운동량</Text>
               <Text style={styles.weekValue}>{weekWorkouts}번의 운동 완료</Text>
             </View>
           </View>
@@ -182,19 +231,25 @@ export function HomeScreen() {
               <Feather name="heart" size={16} color="#4A6CF7" />
             </View>
             <View>
-              <Text style={styles.weekLabel}>체중 변화</Text>
-              <Text style={styles.weekValue}>현재: {latestWeight ? `${latestWeight}kg` : '기록 없음'}</Text>
+              <Text style={styles.weekLabel}>체중 흐름</Text>
+              <Text style={styles.weekValue}>{weightDeltaText}</Text>
             </View>
           </View>
+          <View style={styles.flowDivider} />
+          <Text style={styles.flowInsight}>
+            {todaySum.meals === 0 && todaySum.workouts === 0
+              ? '오늘 기록이 비어 있어요. 식사나 운동 하나만 남겨도 코멘트 정확도가 훨씬 올라갑니다.'
+              : `${phase.label} 기준으로 지금 제일 중요한 건 ${todayNutrition.proteinG < (nutritionTargets?.proteinG || 0) * 0.7 ? '단백질 보강' : weekWorkouts < 3 ? '운동 빈도 유지' : '기록 일관성 유지'}입니다.`}
+          </Text>
         </SurfaceCard>
       </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>영양제 체크</Text>
         {store.supplements.length ? (
-          <SurfaceCard style={styles.supplementCard}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.supplementScroller}>
             {store.supplements.map((supplement: any) => (
-              <View key={supplement.id} style={styles.supplementBlock}>
+              <SurfaceCard key={supplement.id} style={styles.supplementBlock}>
                 <View style={styles.supplementTopRow}>
                   <View style={[styles.supplementIcon, supplement.color === 'sky' && styles.supplementIconSky, supplement.color === 'coral' && styles.supplementIconCoral, supplement.color === 'amber' && styles.supplementIconAmber]}>
                     <Feather name="plus-square" size={16} color={palette.paper} />
@@ -203,6 +258,17 @@ export function HomeScreen() {
                     <Text style={styles.supplementTitle}>{supplement.name}</Text>
                     <Text style={styles.supplementMeta}>{[supplement.dosage, supplement.note].filter(Boolean).join(' · ') || '오늘 복용 체크해 주세요.'}</Text>
                   </View>
+                  <Text style={styles.supplementProgressText}>
+                    {
+                      `${store.supplementLogs.filter((log: any) => log.supplementId === supplement.id && log.date === today).length}/${supplement.times.length}`
+                    }
+                  </Text>
+                </View>
+                <View style={styles.supplementProgressTrack}>
+                  {supplement.times.map((timeSlot: string) => {
+                    const taken = store.supplementLogs.some((log: any) => log.supplementId === supplement.id && log.date === today && log.timeSlot === timeSlot);
+                    return <View key={`${supplement.id}-${timeSlot}-bar`} style={[styles.supplementProgressSegment, taken && styles.supplementProgressSegmentTaken]} />;
+                  })}
                 </View>
                 <View style={styles.supplementDoseRow}>
                   {supplement.times.map((timeSlot: string) => {
@@ -213,15 +279,14 @@ export function HomeScreen() {
                         onPress={() => toggleSupplementDose(supplement.id, today, timeSlot)}
                         style={[styles.supplementDosePill, taken && styles.supplementDosePillTaken]}
                       >
-                        <Text style={styles.supplementDoseEmoji}>{taken ? '😊' : '🥲'}</Text>
                         <Text style={[styles.supplementDoseText, taken && styles.supplementDoseTextTaken]}>{timeSlot}</Text>
                       </Pressable>
                     );
                   })}
                 </View>
-              </View>
+              </SurfaceCard>
             ))}
-          </SurfaceCard>
+          </ScrollView>
         ) : (
           <SurfaceCard style={styles.emptySuppCard}>
             <Text style={styles.emptySuppTitle}>아직 등록한 영양제가 없어요</Text>
@@ -265,28 +330,45 @@ function SummaryCard({ icon, label, value, subValue, variant = 'normal' }: any) 
   );
 }
 
-function CoachMetricCard({
+function MacroProgressCard({
   label,
-  value,
-  caption,
-  tone,
+  color,
+  current,
+  target,
+  range,
+  unit,
 }: {
   label: string;
-  value: string;
-  caption: string;
-  tone: 'mint' | 'sky' | 'coral';
+  color: string;
+  current: number;
+  target: number;
+  range: [number, number] | null;
+  unit: string;
 }) {
+  const ratio = target > 0 ? Math.min(current / target, 1.4) : 0;
+  const percent = target > 0 ? Math.round((current / target) * 100) : 0;
+  const fillHeight = `${Math.max(12, Math.min(100, ratio * 100))}%`;
+
   return (
-    <View
-      style={[
-        styles.coachMetricCard,
-        tone === 'sky' && styles.coachMetricCardSky,
-        tone === 'coral' && styles.coachMetricCardCoral,
-      ]}
-    >
-      <Text style={styles.coachMetricLabel}>{label}</Text>
-      <Text style={styles.coachMetricValue}>{value}</Text>
-      <Text style={styles.coachMetricCaption}>{caption}</Text>
+    <View style={styles.macroCard}>
+      <View style={[styles.macroCircle, { borderColor: `${color}55` }]}>
+        <View style={[styles.macroCircleFill, { height: fillHeight as any, backgroundColor: `${color}33` }]} />
+        <View style={styles.macroCircleInner}>
+          <Text style={styles.macroPercent}>{percent}%</Text>
+          <Text style={styles.macroCurrent}>{Math.round(current)}{unit}</Text>
+        </View>
+      </View>
+      <Text style={styles.macroLabel}>{label}</Text>
+      <Text style={styles.macroCaption}>
+        목표 {Math.round(target)}{unit}
+      </Text>
+      {range ? (
+        <Text style={styles.macroCaptionMuted}>
+          권장 {Math.round(range[0])}~{Math.round(range[1])}{unit}
+        </Text>
+      ) : (
+        <Text style={styles.macroCaptionMuted}>목표 대비 진행률</Text>
+      )}
     </View>
   );
 }
@@ -333,42 +415,41 @@ const styles = StyleSheet.create({
     color: palette.muted,
     opacity: 0.7,
   },
-  coachCard: {
+  nutritionCard: {
     gap: 16,
-    backgroundColor: '#182D21',
-    borderColor: '#294836',
+    backgroundColor: '#F7FBFF',
+    borderColor: '#D9E4F3',
   },
-  coachHeader: {
+  nutritionHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     gap: 12,
+    alignItems: 'flex-start',
   },
-  coachIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2D5A43',
-  },
-  coachHeaderText: {
+  nutritionHeaderText: {
     flex: 1,
   },
-  coachEyebrow: {
+  nutritionEyebrow: {
     fontFamily: fontFamily.medium,
     fontSize: 11,
-    color: '#9CC6AA',
+    color: palette.sky,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
-  coachTitle: {
+  nutritionTitle: {
     marginTop: 2,
     fontFamily: fontFamily.bold,
     fontSize: 22,
-    color: palette.paper,
+    color: palette.ink,
+  },
+  nutritionBody: {
+    marginTop: 6,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: palette.muted,
   },
   phaseChip: {
-    backgroundColor: '#F2C46A',
+    backgroundColor: '#EAF4FF',
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -376,91 +457,101 @@ const styles = StyleSheet.create({
   phaseChipText: {
     fontFamily: fontFamily.bold,
     fontSize: 12,
-    color: '#5F4112',
+    color: '#285D97',
   },
-  coachHeadline: {
-    fontFamily: fontFamily.bold,
-    fontSize: 17,
-    lineHeight: 25,
-    color: palette.paper,
-  },
-  coachBody: {
-    fontFamily: fontFamily.regular,
-    fontSize: 14,
-    lineHeight: 22,
-    color: '#D7E7DB',
-  },
-  calorieLine: {
+  calorieLineBright: {
     flexDirection: 'row',
     gap: 8,
     alignItems: 'center',
     borderRadius: 14,
-    backgroundColor: '#223A2B',
+    backgroundColor: '#FFF5E7',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  calorieLineText: {
+  calorieLineBrightText: {
     flex: 1,
     fontFamily: fontFamily.medium,
     fontSize: 13,
     lineHeight: 19,
-    color: '#FBEAC7',
+    color: '#A45E1B',
   },
-  macroTargetRow: {
+  ringsRow: {
     flexDirection: 'row',
     gap: 10,
+    flexWrap: 'wrap',
   },
-  coachMetricCard: {
-    flex: 1,
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    backgroundColor: '#214531',
+  macroCard: {
+    width: '47%',
+    alignItems: 'center',
+    gap: 6,
   },
-  coachMetricCardSky: {
-    backgroundColor: '#203B55',
+  macroCircle: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    borderWidth: 8,
+    overflow: 'hidden',
+    backgroundColor: '#F3F6F9',
+    justifyContent: 'flex-end',
   },
-  coachMetricCardCoral: {
-    backgroundColor: '#4C2E2A',
+  macroCircleFill: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
-  coachMetricLabel: {
+  macroCircleInner: {
+    position: 'absolute',
+    inset: 10,
+    borderRadius: 36,
+    backgroundColor: palette.paper,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  macroPercent: {
+    fontFamily: fontFamily.bold,
+    fontSize: 17,
+    color: palette.ink,
+  },
+  macroCurrent: {
+    marginTop: 2,
     fontFamily: fontFamily.medium,
     fontSize: 11,
-    color: '#AAC8B6',
+    color: palette.muted,
   },
-  coachMetricValue: {
-    marginTop: 6,
+  macroLabel: {
     fontFamily: fontFamily.bold,
-    fontSize: 20,
-    color: palette.paper,
+    fontSize: 13,
+    color: palette.ink,
   },
-  coachMetricCaption: {
+  macroCaption: {
+    fontFamily: fontFamily.medium,
+    fontSize: 11,
+    color: palette.ink,
+  },
+  macroCaptionMuted: {
+    fontFamily: fontFamily.regular,
+    fontSize: 10,
+    color: palette.muted,
+    textAlign: 'center',
+  },
+  rangeSummaryBox: {
+    borderRadius: 16,
+    backgroundColor: '#EFF6FB',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  rangeSummaryTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 13,
+    color: palette.ink,
+  },
+  rangeSummaryText: {
     marginTop: 4,
     fontFamily: fontFamily.regular,
     fontSize: 12,
-    color: '#C4D9CC',
-  },
-  tipList: {
-    gap: 10,
-  },
-  tipItem: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'flex-start',
-  },
-  tipBullet: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginTop: 8,
-    backgroundColor: '#F2C46A',
-  },
-  tipText: {
-    flex: 1,
-    fontFamily: fontFamily.regular,
-    fontSize: 14,
-    lineHeight: 21,
-    color: '#D7E7DB',
+    lineHeight: 18,
+    color: palette.muted,
   },
   warningBox: {
     flexDirection: 'row',
@@ -478,7 +569,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: '#7B581F',
   },
-  weekCard: {
+  flowCard: {
     gap: 16,
     padding: 20,
   },
@@ -507,6 +598,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: palette.ink,
     marginTop: 2,
+  },
+  flowDivider: {
+    height: 1,
+    backgroundColor: palette.stroke,
+  },
+  flowInsight: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: palette.ink,
   },
   aiCard: {
     backgroundColor: '#F0F9F4',
@@ -565,14 +666,17 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     color: palette.ink,
   },
+  supplementScroller: {
+    gap: 10,
+    paddingRight: 12,
+  },
   supplementCard: {
-    gap: 14,
+    gap: 12,
   },
   supplementBlock: {
-    gap: 10,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEF1EE',
+    width: 250,
+    gap: 8,
+    paddingBottom: 2,
   },
   supplementTopRow: {
     flexDirection: 'row',
@@ -608,25 +712,38 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: palette.muted,
   },
+  supplementProgressText: {
+    fontFamily: fontFamily.bold,
+    fontSize: 12,
+    color: palette.mintDeep,
+  },
+  supplementProgressTrack: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  supplementProgressSegment: {
+    flex: 1,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#E8ECE8',
+  },
+  supplementProgressSegmentTaken: {
+    backgroundColor: palette.mint,
+  },
   supplementDoseRow: {
     flexDirection: 'row',
     gap: 8,
     flexWrap: 'wrap',
   },
   supplementDosePill: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
     borderRadius: 999,
     backgroundColor: '#F4F6F3',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
   },
   supplementDosePillTaken: {
     backgroundColor: '#E7F6EE',
-  },
-  supplementDoseEmoji: {
-    fontSize: 16,
   },
   supplementDoseText: {
     fontFamily: fontFamily.bold,

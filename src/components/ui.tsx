@@ -76,17 +76,19 @@ export function ChoiceChip({
   label,
   selected,
   onPress,
+  size = 'md',
 }: {
   label: string;
   selected: boolean;
   onPress: () => void;
+  size?: 'md' | 'sm';
 }) {
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+      style={[styles.choiceChip, size === 'sm' && styles.choiceChipSmall, selected && styles.choiceChipSelected]}
     >
-      <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
+      <Text style={[styles.choiceChipText, size === 'sm' && styles.choiceChipTextSmall, selected && styles.choiceChipTextSelected]}>
         {label}
       </Text>
     </Pressable>
@@ -99,18 +101,21 @@ export function PrimaryButton({
   icon,
   variant = 'solid',
   disabled = false,
+  size = 'md',
 }: {
   label: string;
   onPress: () => void;
   icon?: IconName;
   variant?: 'solid' | 'outline' | 'ghost';
   disabled?: boolean;
+  size?: 'md' | 'sm';
 }) {
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
       style={[
         styles.button,
+        size === 'sm' && styles.buttonSmall,
         variant === 'solid' && styles.buttonSolid,
         variant === 'outline' && styles.buttonOutline,
         variant === 'ghost' && styles.buttonGhost,
@@ -120,14 +125,15 @@ export function PrimaryButton({
       {icon ? (
         <Feather
           name={icon}
-          size={16}
+          size={size === 'sm' ? 14 : 16}
           color={variant === 'solid' ? (disabled ? '#E0E8E1' : palette.paper) : (disabled ? '#B0B8B1' : palette.ink)}
-          style={styles.buttonIcon}
+          style={[styles.buttonIcon, size === 'sm' && styles.buttonIconSmall]}
         />
       ) : null}
       <Text
         style={[
           styles.buttonText,
+          size === 'sm' && styles.buttonTextSmall,
           variant !== 'solid' && styles.buttonTextDark,
           disabled && styles.buttonTextDisabled,
         ]}
@@ -311,6 +317,10 @@ const styles = StyleSheet.create({
     borderColor: palette.stroke,
     backgroundColor: palette.paper,
   },
+  choiceChipSmall: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
   choiceChipSelected: {
     backgroundColor: palette.ink,
     borderColor: palette.ink,
@@ -319,6 +329,9 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.medium,
     fontSize: 13,
     color: palette.ink,
+  },
+  choiceChipTextSmall: {
+    fontSize: 12,
   },
   choiceChipTextSelected: {
     color: palette.paper,
@@ -330,6 +343,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    maxWidth: '100%',
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  buttonSmall: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
   buttonSolid: {
     backgroundColor: palette.mint,
@@ -350,6 +370,10 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.bold,
     fontSize: 14,
     color: palette.paper,
+    flexShrink: 1,
+  },
+  buttonTextSmall: {
+    fontSize: 12,
   },
   buttonTextDark: {
     color: palette.ink,
@@ -359,6 +383,9 @@ const styles = StyleSheet.create({
   },
   buttonIcon: {
     marginRight: 8,
+  },
+  buttonIconSmall: {
+    marginRight: 6,
   },
   fieldHeader: {
     flexDirection: 'row',

@@ -6,6 +6,7 @@ export type MealRecord = {
   notes: string;
   imageUri?: string;
   nutrition?: NutritionInfo;
+  presetItems?: MealPresetEntry[];
 };
 
 export type NutritionInfo = {
@@ -15,6 +16,21 @@ export type NutritionInfo = {
   fatG: number;
   fiberG?: number;
   source?: 'ai' | 'local' | 'manual' | 'search';
+};
+
+export type MealPreset = {
+  id: string;
+  name: string;
+  servingLabel: string;
+  nutrition: NutritionInfo;
+};
+
+export type MealPresetEntry = {
+  presetId: string;
+  name: string;
+  servingLabel: string;
+  servings: number;
+  nutrition: NutritionInfo;
 };
 
 export type WorkoutKind =
@@ -57,6 +73,13 @@ export type StrengthExerciseEntry = {
   category: StrengthExerciseCategory;
   note?: string;
   sets: StrengthSetEntry[];
+};
+
+export type WorkoutRoutine = {
+  id: string;
+  name: string;
+  exercises: StrengthExerciseEntry[];
+  updatedAt: string;
 };
 
 export type WorkoutRecord = {
@@ -161,6 +184,7 @@ export type UserProfile = {
   sex: 'male' | 'female' | 'other' | '';
   heightCm: string;
   birthDate: string;
+  activityLevel: string;
   dietPhase: DietPhase;
 };
 
@@ -185,6 +209,8 @@ export type SupplementLog = {
 
 export type HealthStore = {
   meals: MealRecord[];
+  mealPresets: MealPreset[];
+  workoutRoutines: WorkoutRoutine[];
   workouts: WorkoutRecord[];
   workoutActivities: WorkoutActivityDefinition[];
   bookmarkedExercises: string[];

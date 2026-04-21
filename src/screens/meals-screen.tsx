@@ -3,10 +3,11 @@ import { addMonths, subMonths } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { ScreenFrame } from '../components/screen-frame';
 import {
+  ChoiceChip,
   EmptyState,
   FieldInput,
   MetricPill,
@@ -16,14 +17,13 @@ import {
 } from '../components/ui';
 import { useHealthData } from '../context/health-data-context';
 import { useGlobalUi } from '../context/global-ui-context';
-import { estimateMealNutrition } from '../services/ai';
+import { estimateMealNutrition, generateAiResponse } from '../services/ai';
 import { fontFamily, palette } from '../theme';
-import { NutritionInfo } from '../types';
+import { MealPresetEntry, NutritionInfo } from '../types';
 import { buildMealCalendar, getMealPhotoRate } from '../utils/analytics';
 import {
   dietPhaseMeta,
   getMacroTotalsForMeals,
-  getDailyBurnEstimate,
   getMacroTotalsForDate,
   getNutritionTargets,
   summarizeNutrition,
@@ -51,6 +51,7 @@ type MealDraft = {
   notes: string;
   aiPrompt: string;
   imageUri: string;
+  presetItems: MealPresetEntry[];
   calories: string;
   carbsG: string;
   proteinG: string;
@@ -76,6 +77,7 @@ function createMealDraft(): MealDraft {
     notes: '',
     aiPrompt: '',
     imageUri: '',
+    presetItems: [],
     calories: '',
     carbsG: '',
     proteinG: '',
@@ -93,6 +95,7 @@ function getDraftFromRecord(record: any): MealDraft {
     notes: record.notes || '',
     aiPrompt: '',
     imageUri: record.imageUri || '',
+    presetItems: record.presetItems || [],
     calories: record.nutrition?.calories ? String(record.nutrition.calories) : '',
     carbsG: record.nutrition?.carbsG ? String(record.nutrition.carbsG) : '',
     proteinG: record.nutrition?.proteinG ? String(record.nutrition.proteinG) : '',
@@ -102,7 +105,28 @@ function getDraftFromRecord(record: any): MealDraft {
 }
 
 function hasNutritionDraft(draft: MealDraft) {
-  return Boolean(draft.calories || draft.carbsG || draft.proteinG || draft.fatG || draft.fiberG);
+  return Boolean(
+    draft.calories ||
+    draft.carbsG ||
+    draft.proteinG ||
+    draft.fatG ||
+    draft.fiberG ||
+    draft.presetItems.length,
+  );
+}
+
+function sumPresetItems(items: MealPresetEntry[]) {
+  return items.reduce<NutritionInfo>(
+    (totals, item) => ({
+      calories: (totals.calories || 0) + ((item.nutrition.calories || 0) * item.servings),
+      carbsG: totals.carbsG + item.nutrition.carbsG * item.servings,
+      proteinG: totals.proteinG + item.nutrition.proteinG * item.servings,
+      fatG: totals.fatG + item.nutrition.fatG * item.servings,
+      fiberG: (totals.fiberG || 0) + ((item.nutrition.fiberG || 0) * item.servings),
+      source: item.nutrition.source || 'manual',
+    }),
+    { calories: 0, carbsG: 0, proteinG: 0, fatG: 0, fiberG: 0, source: 'manual' },
+  );
 }
 
 function buildNutritionFromDraft(draft: MealDraft, source: NutritionInfo['source'] = 'manual') {
@@ -110,12 +134,13 @@ function buildNutritionFromDraft(draft: MealDraft, source: NutritionInfo['source
     return undefined;
   }
 
+  const presetNutrition = sumPresetItems(draft.presetItems);
   const nutrition = summarizeNutrition({
-    calories: draft.calories ? Number(draft.calories) : undefined,
-    carbsG: Number(draft.carbsG || 0),
-    proteinG: Number(draft.proteinG || 0),
-    fatG: Number(draft.fatG || 0),
-    fiberG: draft.fiberG ? Number(draft.fiberG) : undefined,
+    calories: (draft.calories ? Number(draft.calories) : 0) + (presetNutrition.calories || 0),
+    carbsG: Number(draft.carbsG || 0) + presetNutrition.carbsG,
+    proteinG: Number(draft.proteinG || 0) + presetNutrition.proteinG,
+    fatG: Number(draft.fatG || 0) + presetNutrition.fatG,
+    fiberG: (draft.fiberG ? Number(draft.fiberG) : 0) + (presetNutrition.fiberG || 0),
     source,
   });
 
@@ -130,16 +155,26 @@ function formatMacroValue(value: number | undefined, suffix: string) {
 }
 
 export function MealsScreen({ route, navigation }: any) {
-  const { store, addMeal, deleteMeal } = useHealthData();
+  const { store, addMeal, deleteMeal, saveMealPresets } = useHealthData();
   const { openAddMenu } = useGlobalUi();
   const [focusMonth, setFocusMonth] = useState(new Date());
   const [query, setQuery] = useState('');
   const [selectedMealDate, setSelectedMealDate] = useState<string | null>(null);
   const [composerVisible, setComposerVisible] = useState(false);
+  const [presetPickerVisible, setPresetPickerVisible] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [draft, setDraft] = useState<MealDraft>(createMealDraft());
   const [aiSummary, setAiSummary] = useState<MealAiSummary | null>(null);
   const [lastImageBase64s, setLastImageBase64s] = useState<string[]>([]);
+  const [presetDraftName, setPresetDraftName] = useState('');
+  const [presetDraftServing, setPresetDraftServing] = useState('1회분');
+  const [presetDraftCalories, setPresetDraftCalories] = useState('');
+  const [presetDraftCarbs, setPresetDraftCarbs] = useState('');
+  const [presetDraftProtein, setPresetDraftProtein] = useState('');
+  const [presetDraftFat, setPresetDraftFat] = useState('');
+  const [summaryPeriod, setSummaryPeriod] = useState<'today' | 'week' | 'month'>('today');
+  const [coachLoading, setCoachLoading] = useState(false);
+  const [coachText, setCoachText] = useState('');
 
   const shouldOpen = route?.params?.openComposer;
   const prefilledData = route?.params?.prefilledData;
@@ -163,9 +198,6 @@ export function MealsScreen({ route, navigation }: any) {
     return haystack.includes(query.toLowerCase());
   });
   const nutritionTargets = getNutritionTargets(store);
-  const todayNutrition = getMacroTotalsForDate(store.meals);
-  const burnEstimate = getDailyBurnEstimate(store) || 0;
-  const calorieDelta = Math.round(todayNutrition.calories - burnEstimate);
   const phaseLabel = dietPhaseMeta[store.profile.dietPhase || 'lean'].label;
   const mealCalendar = buildMealCalendar(focusMonth, store.meals);
   const configuredModelLabel =
@@ -173,43 +205,46 @@ export function MealsScreen({ route, navigation }: any) {
       ? `OpenAI · ${store.aiSettings.openAiModel || 'gpt-5-mini'}`
       : `Gemini · ${store.aiSettings.geminiModel || 'gemini-2.5-flash'}`;
 
-  const macroRings = useMemo(
-    () => [
-      {
-        key: 'carbs',
-        label: '탄수화물',
-        color: '#4A86FF',
-        current: todayNutrition.carbsG,
-        target: nutritionTargets?.carbsG ?? 0,
-        unit: 'g',
-      },
-      {
-        key: 'protein',
-        label: '단백질',
-        color: palette.mintDeep,
-        current: todayNutrition.proteinG,
-        target: nutritionTargets?.proteinG ?? 0,
-        unit: 'g',
-      },
-      {
-        key: 'fat',
-        label: '지방',
-        color: palette.coral,
-        current: todayNutrition.fatG,
-        target: nutritionTargets?.fatG ?? 0,
-        unit: 'g',
-      },
-    ],
-    [nutritionTargets, todayNutrition],
-  );
   const selectedDateMeals = selectedMealDate
     ? sortByDateDesc(store.meals).filter((record) => record.date === selectedMealDate)
     : [];
+  const summarySourceMeals = useMemo(() => {
+    const today = todayDateKey();
+    if (summaryPeriod === 'today') {
+      return store.meals.filter((record) => record.date === today);
+    }
+    const floor = shiftDateKey(today, summaryPeriod === 'week' ? -6 : -29);
+    return store.meals.filter((record) => record.date >= floor);
+  }, [store.meals, summaryPeriod]);
+  const summaryDates = useMemo(
+    () => Array.from(new Set(summarySourceMeals.map((record) => record.date))).sort(),
+    [summarySourceMeals],
+  );
+  const summaryNutrition = useMemo(() => getMacroTotalsForMeals(summarySourceMeals), [summarySourceMeals]);
+  const summaryDayCount = Math.max(summaryDates.length, summaryPeriod === 'today' ? 1 : 0);
+  const averageCalories = summaryDayCount ? Math.round(summaryNutrition.calories / summaryDayCount) : 0;
+  const averageProtein = summaryDayCount ? Math.round(summaryNutrition.proteinG / summaryDayCount) : 0;
+  const calorieTarget = nutritionTargets?.calories ?? 0;
+  const proteinTarget = nutritionTargets?.proteinG ?? 0;
+  const calorieProgress = calorieTarget ? Math.round((averageCalories / calorieTarget) * 100) : 0;
+  const proteinHitDays = summaryDates.filter((date) => {
+    const totals = getMacroTotalsForDate(store.meals, date);
+    return proteinTarget > 0 && totals.proteinG >= proteinTarget * 0.9;
+  }).length;
   const selectedDateNutrition = selectedMealDate
     ? getMacroTotalsForDate(store.meals, selectedMealDate)
     : getMacroTotalsForMeals([]);
   const selectedDateMacroRings = useMemo(
     () => [
+      {
+        key: 'selected-calories',
+        label: '칼로리',
+        color: '#F28D3A',
+        current: selectedDateNutrition.calories,
+        target: nutritionTargets?.calories ?? 0,
+        unit: 'kcal',
+        range: null,
+      },
       {
         key: 'selected-carbs',
         label: '탄수화물',
@@ -217,6 +252,7 @@ export function MealsScreen({ route, navigation }: any) {
         current: selectedDateNutrition.carbsG,
         target: nutritionTargets?.carbsG ?? 0,
         unit: 'g',
+        range: nutritionTargets?.carbsRangeG ?? null,
       },
       {
         key: 'selected-protein',
@@ -225,6 +261,7 @@ export function MealsScreen({ route, navigation }: any) {
         current: selectedDateNutrition.proteinG,
         target: nutritionTargets?.proteinG ?? 0,
         unit: 'g',
+        range: nutritionTargets?.proteinRangeG ?? null,
       },
       {
         key: 'selected-fat',
@@ -233,6 +270,7 @@ export function MealsScreen({ route, navigation }: any) {
         current: selectedDateNutrition.fatG,
         target: nutritionTargets?.fatG ?? 0,
         unit: 'g',
+        range: nutritionTargets?.fatRangeG ?? null,
       },
     ],
     [nutritionTargets, selectedDateNutrition],
@@ -286,6 +324,65 @@ export function MealsScreen({ route, navigation }: any) {
         };
       }),
     [mealCalendar, nutritionTargets],
+  );
+  React.useEffect(() => {
+    async function buildMealCoachSummary() {
+      const periodLabel = summaryPeriod === 'today' ? '오늘' : summaryPeriod === 'week' ? '최근 7일' : '최근 30일';
+      const dayLines = summaryDates.length
+        ? summaryDates
+            .map((date) => {
+              const totals = getMacroTotalsForDate(store.meals, date);
+              return `${date}: ${Math.round(totals.calories)}kcal / 탄수 ${Math.round(totals.carbsG)}g / 단백질 ${Math.round(totals.proteinG)}g / 지방 ${Math.round(totals.fatG)}g`;
+            })
+            .join('\n')
+        : '기록 없음';
+      const localFallback = !summarySourceMeals.length
+        ? `${periodLabel} 식단 기록이 아직 없습니다. 한두 끼만 남겨도 목표 대비 모자란 지점을 바로 읽을 수 있어요.`
+        : proteinHitDays < Math.max(1, Math.ceil(summaryDates.length * 0.5))
+          ? `${periodLabel} 식단은 총칼로리보다 단백질 충족 빈도가 더 약합니다. 끼니 수보다 한 끼당 단백질 밀도를 먼저 끌어올리는 쪽이 회복과 체성분 관리에 더 유리합니다.`
+          : calorieProgress > 118
+            ? `${periodLabel} 식단은 평균 칼로리가 목표보다 앞서 있습니다. 증량 의도가 아니라면 탄수와 지방이 같이 높은 끼니 빈도를 먼저 줄이는 편이 좋습니다.`
+            : `${periodLabel} 식단은 목표 범위에 비교적 안정적으로 들어오고 있습니다. 지금은 총량보다 기록 누락 없이 패턴을 유지하는 것이 더 중요합니다.`;
+      try {
+        setCoachLoading(true);
+        const text = await generateAiResponse(
+          store.aiSettings,
+          store,
+          `당신은 스포츠 영양 코치입니다. 뻔한 말 금지, 과한 칭찬 금지, 숫자 근거 포함.
+한국어로 2~3문장, 140자 안팎으로만 답하세요.
+${periodLabel} 식단을 목표 단계 기준으로 평가하고, 가장 중요한 조정 포인트 1개만 말하세요.
+
+목표 단계: ${phaseLabel}
+목표 칼로리: ${Math.round(calorieTarget)}kcal
+목표 탄단지: 탄수 ${Math.round(nutritionTargets?.carbsG ?? 0)}g / 단백질 ${Math.round(proteinTarget)}g / 지방 ${Math.round(nutritionTargets?.fatG ?? 0)}g
+요약: 기록 ${summarySourceMeals.length}건, 기록일 ${summaryDates.length}일, 평균 칼로리 ${averageCalories}kcal(${calorieProgress}%), 평균 단백질 ${averageProtein}g, 단백질 충족일 ${proteinHitDays}일
+
+일자별 섭취:
+${dayLines}`,
+        );
+        setCoachText(text);
+      } catch {
+        setCoachText(localFallback);
+      } finally {
+        setCoachLoading(false);
+      }
+    }
+    buildMealCoachSummary();
+  }, [averageCalories, averageProtein, calorieProgress, calorieTarget, nutritionTargets?.carbsG, nutritionTargets?.fatG, phaseLabel, proteinHitDays, proteinTarget, store, summaryDates, summaryPeriod, summarySourceMeals.length]);
+  const presetNutrition = useMemo(() => summarizeNutrition(sumPresetItems(draft.presetItems)), [draft.presetItems]);
+  const calendarSwipe = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 14 && Math.abs(gesture.dy) < 20,
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx > 40) {
+            setFocusMonth((current) => subMonths(current, 1));
+          } else if (gesture.dx < -40) {
+            setFocusMonth((current) => addMonths(current, 1));
+          }
+        },
+      }),
+    [],
   );
 
   async function openComposer(initialData?: any, forcedImage?: string) {
@@ -435,8 +532,12 @@ export function MealsScreen({ route, navigation }: any) {
 
   function persistMeal(overrideNutrition?: NutritionInfo, overrideDraft?: Partial<MealDraft>) {
     const finalDraft = { ...draft, ...overrideDraft };
+    const fallbackTitle =
+      finalDraft.title.trim() ||
+      finalDraft.presetItems.map((item) => item.name).join(', ') ||
+      finalDraft.aiPrompt.trim().split(/[,.]/)[0];
 
-    if (!finalDraft.title.trim()) {
+    if (!fallbackTitle.trim()) {
       Alert.alert('메뉴를 입력해 주세요', '식단 기록을 위해 어떤 음식을 드셨는지 간단히 적어주세요.');
       return;
     }
@@ -449,16 +550,17 @@ export function MealsScreen({ route, navigation }: any) {
       id: finalDraft.id || makeId('meal'),
       date: finalDraft.date,
       time: finalDraft.time,
-      title: finalDraft.title.trim(),
+      title: fallbackTitle.trim(),
       notes: finalDraft.notes.trim(),
       imageUri: finalDraft.imageUri || undefined,
       nutrition,
+      presetItems: finalDraft.presetItems,
     });
     setComposerVisible(false);
   }
 
   async function saveMeal() {
-    if (!draft.title.trim() && !draft.aiPrompt.trim() && lastImageBase64s.length === 0) {
+    if (!draft.title.trim() && !draft.aiPrompt.trim() && lastImageBase64s.length === 0 && draft.presetItems.length === 0) {
       Alert.alert('메뉴를 입력해 주세요', '식단 기록을 위해 어떤 음식을 드셨는지 간단히 적어주세요.');
       return;
     }
@@ -475,6 +577,80 @@ export function MealsScreen({ route, navigation }: any) {
     confirmAction('기록 삭제', '이 식단 기록을 정말 삭제할까요? 삭제 후에는 복구할 수 없습니다.', () => deleteMeal(id));
   }
 
+  function addPresetItem(presetId: string) {
+    const preset = store.mealPresets.find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
+
+    setDraft((current) => ({
+      ...current,
+      presetItems: [
+        ...current.presetItems,
+        {
+          presetId: preset.id,
+          name: preset.name,
+          servingLabel: preset.servingLabel,
+          servings: 1,
+          nutrition: preset.nutrition,
+        },
+      ],
+    }));
+    setPresetPickerVisible(false);
+  }
+
+  function updatePresetItem(index: number, nextServings: number) {
+    setDraft((current) => ({
+      ...current,
+      presetItems: current.presetItems.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, servings: Math.max(0.5, nextServings) } : item,
+      ),
+    }));
+  }
+
+  function removePresetItem(index: number) {
+    setDraft((current) => ({
+      ...current,
+      presetItems: current.presetItems.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
+  function saveCurrentAsPreset() {
+    const nutrition = summarizeNutrition({
+      calories: presetDraftCalories ? Number(presetDraftCalories) : undefined,
+      carbsG: Number(presetDraftCarbs || 0),
+      proteinG: Number(presetDraftProtein || 0),
+      fatG: Number(presetDraftFat || 0),
+      source: 'manual',
+    });
+
+    if (!presetDraftName.trim() || !nutrition) {
+      Alert.alert('프리셋 저장 실패', '이름과 영양 정보를 먼저 입력해 주세요.');
+      return;
+    }
+
+    saveMealPresets([
+      {
+        id: makeId('preset'),
+        name: presetDraftName.trim(),
+        servingLabel: presetDraftServing.trim() || '1회분',
+        nutrition,
+      },
+      ...store.mealPresets,
+    ]);
+    setPresetDraftName('');
+    setPresetDraftServing('1회분');
+    setPresetDraftCalories('');
+    setPresetDraftCarbs('');
+    setPresetDraftProtein('');
+    setPresetDraftFat('');
+    Alert.alert('저장 완료', '이제 메뉴 불러오기에서 바로 쓸 수 있어요.');
+  }
+
+  function deleteMealPreset(presetId: string) {
+    saveMealPresets(store.mealPresets.filter((preset) => preset.id !== presetId));
+  }
+
   return (
     <>
       <ScreenFrame
@@ -487,58 +663,33 @@ export function MealsScreen({ route, navigation }: any) {
         actionLabel="식단 추가"
         onAction={openAddMenu}
       >
-        <View style={styles.metricsRow}>
-          <MetricPill label="이번 주 기록" value={`${mealsThisWeek}건`} tone="good" />
-          <MetricPill label="사진 첨부율" value={`${getMealPhotoRate(store.meals)}%`} />
-          <MetricPill label="현재 모드" value={phaseLabel} tone="warm" />
-        </View>
-
-        <SurfaceCard style={styles.goalCard}>
-          <View style={styles.goalHeader}>
+        <SurfaceCard style={styles.summaryCard}>
+          <View style={styles.inlineHeader}>
             <View>
-              <Text style={styles.goalTitle}>오늘의 탄단지 진행률</Text>
-              <Text style={styles.goalCaption}>
-                {nutritionTargets
-                  ? `${phaseLabel} 기준 목표 대비 얼마나 채웠는지 보여드려요.`
-                  : '설정과 체중 기록을 먼저 입력하면 맞춤 목표를 계산할 수 있어요.'}
-              </Text>
-              <View style={styles.calorieCoachRow}>
-                <Feather name="fire" size={15} color="#F28D3A" />
-                <Text style={styles.calorieCoachText}>
-                  {burnEstimate
-                    ? `오늘 섭취 ${Math.round(todayNutrition.calories)}kcal, 예상 소모 ${Math.round(burnEstimate)}kcal${Math.abs(calorieDelta) > 0 ? ` · ${calorieDelta > 0 ? `${Math.abs(calorieDelta)}kcal 더 먹음` : `${Math.abs(calorieDelta)}kcal 덜 먹음`}` : ''}`
-                    : `오늘 섭취 ${Math.round(todayNutrition.calories)}kcal`}
-                </Text>
-              </View>
+              <Text style={styles.summaryTitle}>Meal Coach Summary</Text>
+              <Text style={styles.summaryCaption}>기록 밀도와 목표 적합도를 짧고 정확하게 요약합니다.</Text>
             </View>
-            <View style={styles.calorieBadge}>
-              <Text style={styles.calorieBadgeLabel}>칼로리</Text>
-              <Text style={styles.calorieBadgeValue}>
-                {nutritionTargets
-                  ? `${Math.round(todayNutrition.calories)} / ${Math.round(nutritionTargets.calories)}`
-                  : Math.round(todayNutrition.calories)}
-              </Text>
-            </View>
+            {coachLoading ? <ActivityIndicator size="small" color={palette.mintDeep} /> : null}
           </View>
-          <View style={styles.ringsRow}>
-            {macroRings.map((macro) => (
-              <MacroRing
-                key={macro.key}
-                label={macro.label}
-                color={macro.color}
-                current={macro.current}
-                target={macro.target}
-                unit={macro.unit}
-              />
-            ))}
+          <View style={styles.filterRow}>
+            <ChoiceChip label="오늘" selected={summaryPeriod === 'today'} onPress={() => setSummaryPeriod('today')} />
+            <ChoiceChip label="주간" selected={summaryPeriod === 'week'} onPress={() => setSummaryPeriod('week')} />
+            <ChoiceChip label="월간" selected={summaryPeriod === 'month'} onPress={() => setSummaryPeriod('month')} />
           </View>
+          <View style={styles.metricsRow}>
+            <MetricPill label="기록" value={`${summarySourceMeals.length}건`} tone="good" />
+            <MetricPill label="평균 칼로리" value={summarySourceMeals.length ? `${averageCalories} kcal` : '-'} />
+            <MetricPill label="단백질 충족" value={`${proteinHitDays}/${summaryDates.length || 0}일`} tone="warm" />
+          </View>
+          <Text style={styles.summaryBody}>{coachText || '식단 요약을 준비하고 있습니다.'}</Text>
         </SurfaceCard>
 
+        <View {...calendarSwipe.panHandlers}>
         <SurfaceCard style={styles.calendarCard}>
           <View style={styles.monthHeader}>
-            <View>
+            <View style={styles.monthHeading}>
               <Text style={styles.monthLabel}>{formatMonthYear(focusMonth)}</Text>
-              <Text style={styles.monthCaption}>식단 목표 달성률을 표정으로 한눈에 확인해 보세요.</Text>
+              <Text style={styles.monthCaption}>좌우로 밀어 월을 넘기고, 날짜를 눌러 그날 식단을 확인해 보세요.</Text>
             </View>
             <View style={styles.monthActions}>
               <Pressable onPress={() => setFocusMonth((current) => subMonths(current, 1))} style={styles.monthButton}>
@@ -547,21 +698,6 @@ export function MealsScreen({ route, navigation }: any) {
               <Pressable onPress={() => setFocusMonth((current) => addMonths(current, 1))} style={styles.monthButton}>
                 <Feather name="chevron-right" size={18} color={palette.ink} />
               </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.mealLegendRow}>
-            <View style={styles.mealLegendItem}>
-              <Text style={styles.mealLegendEmoji}>😊</Text>
-              <Text style={styles.mealLegendText}>잘 채움</Text>
-            </View>
-            <View style={styles.mealLegendItem}>
-              <Text style={styles.mealLegendEmoji}>🥺</Text>
-              <Text style={styles.mealLegendText}>부족</Text>
-            </View>
-            <View style={styles.mealLegendItem}>
-              <Text style={styles.mealLegendEmoji}>😤</Text>
-              <Text style={styles.mealLegendText}>초과</Text>
             </View>
           </View>
 
@@ -603,6 +739,7 @@ export function MealsScreen({ route, navigation }: any) {
               ))}
             </View>
         </SurfaceCard>
+        </View>
 
         <EmptyState
           title={meals.length ? '달력에서 날짜를 눌러 식단 보기' : '식단 기록이 아직 없습니다'}
@@ -621,7 +758,7 @@ export function MealsScreen({ route, navigation }: any) {
         <SurfaceCard style={styles.goalCard}>
           <View style={styles.goalHeader}>
             <View>
-              <Text style={styles.goalTitle}>그날의 탄단지 진행률</Text>
+              <Text style={styles.goalTitle}>그날의 탄단지 + 칼로리</Text>
               <Text style={styles.goalCaption}>
                 {nutritionTargets
                   ? `${selectedMealDate ? formatLongDate(selectedMealDate) : '선택한 날짜'} 기준 목표 대비 얼마나 채웠는지 보여드려요. 100%를 넘기면 초과로 표시합니다.`
@@ -646,6 +783,7 @@ export function MealsScreen({ route, navigation }: any) {
                 current={macro.current}
                 target={macro.target}
                 unit={macro.unit}
+                range={macro.range}
               />
             ))}
           </View>
@@ -706,7 +844,7 @@ export function MealsScreen({ route, navigation }: any) {
       </ModalSheet>
 
       <ModalSheet
-        visible={composerVisible}
+        visible={composerVisible && !presetPickerVisible}
         title="식단 추가하기"
         subtitle={
           isAnalyzing
@@ -782,6 +920,111 @@ export function MealsScreen({ route, navigation }: any) {
           onChangeText={(aiPrompt) => setDraft((current) => ({ ...current, aiPrompt }))}
         />
 
+        <SurfaceCard style={styles.presetCard}>
+          <View style={styles.inlineHeader}>
+            <View style={styles.inlineHeading}>
+              <Text style={styles.inlineTitle}>제품 / 메뉴 불러오기</Text>
+              <Text style={styles.inlineCaption}>항상 먹는 제품은 저장해두고 항목처럼 여러 개 추가할 수 있어요.</Text>
+            </View>
+            <Pressable onPress={() => setPresetPickerVisible(true)} style={styles.inlineAction}>
+              <Feather name="bookmark" size={16} color={palette.mintDeep} />
+              <Text style={styles.inlineActionText}>불러오기</Text>
+            </Pressable>
+          </View>
+
+          {draft.presetItems.length ? (
+            <View style={styles.presetItemList}>
+              {draft.presetItems.map((item, index) => (
+                <View key={`${item.presetId}-${index}`} style={styles.presetItemRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.presetItemTitle}>{item.name}</Text>
+                    <Text style={styles.presetItemMeta}>
+                      {item.servingLabel} · {item.servings}회분
+                    </Text>
+                  </View>
+                  <View style={styles.presetItemControls}>
+                    <Pressable onPress={() => updatePresetItem(index, item.servings - 0.5)} hitSlop={10}>
+                      <Feather name="minus-circle" size={18} color={palette.muted} />
+                    </Pressable>
+                    <Text style={styles.presetServingsText}>{item.servings}</Text>
+                    <Pressable onPress={() => updatePresetItem(index, item.servings + 0.5)} hitSlop={10}>
+                      <Feather name="plus-circle" size={18} color={palette.mintDeep} />
+                    </Pressable>
+                    <Pressable onPress={() => removePresetItem(index)} hitSlop={10}>
+                      <Feather name="trash-2" size={16} color={palette.coral} />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.inlineEmptyText}>아직 추가한 제품 항목이 없어요.</Text>
+          )}
+
+          {presetNutrition ? (
+            <View style={styles.inlineNutritionRow}>
+              <MiniMacroPill label="탄" value={`${Math.round(presetNutrition.carbsG)}g`} tone="blue" />
+              <MiniMacroPill label="단" value={`${Math.round(presetNutrition.proteinG)}g`} tone="green" />
+              <MiniMacroPill label="지" value={`${Math.round(presetNutrition.fatG)}g`} tone="coral" />
+              <MiniMacroPill label="kcal" value={`${Math.round(presetNutrition.calories || 0)}`} tone="neutral" />
+            </View>
+          ) : null}
+
+          <View style={styles.presetSaveRow}>
+            <FieldInput
+              label="제품 / 메뉴 저장"
+              placeholder="예: 프로틴 그래놀라 제로슈거"
+              value={presetDraftName}
+              onChangeText={setPresetDraftName}
+              style={{ flex: 1 }}
+            />
+            <FieldInput
+              label="기준"
+              placeholder="1컵"
+              value={presetDraftServing}
+              onChangeText={setPresetDraftServing}
+              style={styles.presetServingInput}
+            />
+          </View>
+          <View style={styles.nutritionGrid}>
+            <FieldInput
+              label="칼로리"
+              placeholder="210"
+              keyboardType="decimal-pad"
+              value={presetDraftCalories}
+              onChangeText={setPresetDraftCalories}
+              style={{ flex: 1 }}
+            />
+            <FieldInput
+              label="탄수화물 (g)"
+              placeholder="29"
+              keyboardType="decimal-pad"
+              value={presetDraftCarbs}
+              onChangeText={setPresetDraftCarbs}
+              style={{ flex: 1 }}
+            />
+          </View>
+          <View style={styles.nutritionGrid}>
+            <FieldInput
+              label="단백질 (g)"
+              placeholder="17"
+              keyboardType="decimal-pad"
+              value={presetDraftProtein}
+              onChangeText={setPresetDraftProtein}
+              style={{ flex: 1 }}
+            />
+            <FieldInput
+              label="지방 (g)"
+              placeholder="5"
+              keyboardType="decimal-pad"
+              value={presetDraftFat}
+              onChangeText={setPresetDraftFat}
+              style={{ flex: 1 }}
+            />
+          </View>
+          <PrimaryButton label="제품 / 메뉴 저장" onPress={saveCurrentAsPreset} icon="save" variant="outline" />
+        </SurfaceCard>
+
         <SurfaceCard style={styles.attachmentCard}>
           <View style={styles.attachmentHeader}>
             <View style={{ flex: 1 }}>
@@ -841,7 +1084,7 @@ export function MealsScreen({ route, navigation }: any) {
           <View style={styles.nutritionEditorHeader}>
             <View>
               <Text style={styles.nutritionEditorTitle}>영양 정보</Text>
-              <Text style={styles.nutritionEditorCaption}>AI 추정 후 필요하면 숫자를 직접 수정해 주세요.</Text>
+              <Text style={styles.nutritionEditorCaption}>제품 항목 합계에 AI 요리 추정이나 직접 입력 수치를 더해서 저장됩니다.</Text>
             </View>
             <View style={styles.phaseBadge}>
               <Text style={styles.phaseBadgeText}>{phaseLabel}</Text>
@@ -892,6 +1135,48 @@ export function MealsScreen({ route, navigation }: any) {
           />
         </SurfaceCard>
       </ModalSheet>
+
+      <ModalSheet
+        visible={presetPickerVisible}
+        title="메뉴 불러오기"
+        subtitle="저장해둔 제품을 여러 항목으로 바로 추가할 수 있어요."
+        onClose={() => setPresetPickerVisible(false)}
+      >
+        {store.mealPresets.length ? (
+          <View style={styles.presetPickerList}>
+            {store.mealPresets.map((preset) => (
+              <SurfaceCard key={preset.id} style={styles.presetPickerCard}>
+                <View style={styles.presetPickerHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.presetItemTitle}>{preset.name}</Text>
+                    <Text style={styles.presetItemMeta}>{preset.servingLabel}</Text>
+                  </View>
+                  <View style={styles.presetPickerActions}>
+                    <Pressable onPress={() => addPresetItem(preset.id)} style={styles.inlineAction}>
+                      <Feather name="plus" size={16} color={palette.mintDeep} />
+                      <Text style={styles.inlineActionText}>추가</Text>
+                    </Pressable>
+                    <Pressable onPress={() => deleteMealPreset(preset.id)} style={styles.presetDeleteButton}>
+                      <Feather name="trash-2" size={16} color={palette.coral} />
+                    </Pressable>
+                  </View>
+                </View>
+                <View style={styles.inlineNutritionRow}>
+                  <MiniMacroPill label="탄" value={`${Math.round(preset.nutrition.carbsG)}g`} tone="blue" />
+                  <MiniMacroPill label="단" value={`${Math.round(preset.nutrition.proteinG)}g`} tone="green" />
+                  <MiniMacroPill label="지" value={`${Math.round(preset.nutrition.fatG)}g`} tone="coral" />
+                  <MiniMacroPill label="kcal" value={`${Math.round(preset.nutrition.calories || 0)}`} tone="neutral" />
+                </View>
+              </SurfaceCard>
+            ))}
+          </View>
+        ) : (
+          <EmptyState
+            title="저장된 메뉴가 없어요"
+            body="영양 정보를 먼저 입력한 뒤 제품으로 저장해 두면 다음부터 바로 불러올 수 있어요."
+          />
+        )}
+      </ModalSheet>
     </>
   );
 }
@@ -902,20 +1187,23 @@ function MacroRing({
   current,
   target,
   unit,
+  range,
 }: {
   label: string;
   color: string;
   current: number;
   target: number;
   unit: string;
+  range?: [number, number] | null;
 }) {
   const ratio = target ? Math.min(1.5, current / target) : 0;
   const rawPercent = target ? Math.round((current / target) * 100) : 0;
-  const percent = Math.round(ratio * 100);
+  const fillHeight = `${Math.max(12, Math.min(100, ratio * 100))}%`;
 
   return (
     <View style={styles.ringWrap}>
-      <View style={[styles.ringOuter, { borderColor: color, backgroundColor: `${color}12` }]}>
+      <View style={[styles.ringOuter, { borderColor: `${color}55`, backgroundColor: '#F3F6F9' }]}>
+        <View style={[styles.ringFill, { height: fillHeight as any, backgroundColor: `${color}33` }]} />
         <View style={styles.ringInner}>
           <Text style={styles.ringPercent}>{target ? `${rawPercent}%` : '--'}</Text>
           {target && rawPercent > 100 ? <Text style={styles.ringOverLabel}>초과</Text> : null}
@@ -924,6 +1212,7 @@ function MacroRing({
       </View>
       <Text style={styles.ringLabel}>{label}</Text>
       <Text style={styles.ringTarget}>{target ? `목표 ${Math.round(target)}${unit}` : '목표 계산 필요'}</Text>
+      {range ? <Text style={styles.ringTargetMuted}>권장 {Math.round(range[0])}~{Math.round(range[1])}{unit}</Text> : null}
     </View>
   );
 }
@@ -957,6 +1246,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  summaryCard: {
+    gap: 14,
+    backgroundColor: '#F8FCF9',
+    borderColor: '#D7E9DD',
+  },
+  summaryTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 18,
+    color: palette.ink,
+  },
+  summaryCaption: {
+    marginTop: 4,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.muted,
+  },
+  summaryBody: {
+    fontFamily: fontFamily.regular,
+    fontSize: 14,
+    lineHeight: 21,
+    color: palette.ink,
+  },
   goalCard: {
     gap: 18,
     backgroundColor: '#F7FBFF',
@@ -972,6 +1289,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
     alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  monthHeading: {
+    flex: 1,
+    minWidth: 0,
   },
   monthLabel: {
     fontFamily: fontFamily.bold,
@@ -987,6 +1309,7 @@ const styles = StyleSheet.create({
   monthActions: {
     flexDirection: 'row',
     gap: 8,
+    flexShrink: 0,
   },
   monthButton: {
     width: 40,
@@ -1154,12 +1477,20 @@ const styles = StyleSheet.create({
     height: 96,
     borderRadius: 48,
     borderWidth: 8,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#F3F6F9',
+  },
+  ringFill: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   ringInner: {
-    width: 72,
-    height: 72,
+    position: 'absolute',
+    inset: 10,
     borderRadius: 36,
     backgroundColor: palette.paper,
     alignItems: 'center',
@@ -1190,6 +1521,12 @@ const styles = StyleSheet.create({
   ringTarget: {
     fontFamily: fontFamily.regular,
     fontSize: 11,
+    color: palette.muted,
+    textAlign: 'center',
+  },
+  ringTargetMuted: {
+    fontFamily: fontFamily.regular,
+    fontSize: 10,
     color: palette.muted,
     textAlign: 'center',
   },
@@ -1320,6 +1657,128 @@ const styles = StyleSheet.create({
   },
   attachmentCard: {
     gap: 14,
+  },
+  presetCard: {
+    gap: 14,
+    backgroundColor: '#F9FCF8',
+    borderColor: '#DDE9DF',
+  },
+  inlineHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+  },
+  inlineHeading: {
+    flex: 1,
+    minWidth: 0,
+  },
+  inlineTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 16,
+    color: palette.ink,
+  },
+  inlineCaption: {
+    marginTop: 4,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.muted,
+  },
+  inlineAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: '#E7F6EE',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignSelf: 'flex-start',
+  },
+  inlineActionText: {
+    fontFamily: fontFamily.bold,
+    fontSize: 12,
+    color: palette.mintDeep,
+  },
+  inlineEmptyText: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    color: palette.muted,
+  },
+  presetItemList: {
+    gap: 10,
+  },
+  presetItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: palette.paper,
+    borderWidth: 1,
+    borderColor: palette.stroke,
+  },
+  presetItemTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 14,
+    color: palette.ink,
+  },
+  presetItemMeta: {
+    marginTop: 3,
+    fontFamily: fontFamily.regular,
+    fontSize: 12,
+    color: palette.muted,
+  },
+  presetItemControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  presetServingsText: {
+    minWidth: 24,
+    textAlign: 'center',
+    fontFamily: fontFamily.bold,
+    fontSize: 13,
+    color: palette.ink,
+  },
+  inlineNutritionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  presetSaveRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'flex-end',
+  },
+  presetServingInput: {
+    width: 110,
+  },
+  presetPickerList: {
+    gap: 10,
+  },
+  presetPickerCard: {
+    gap: 10,
+  },
+  presetPickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  presetPickerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  presetDeleteButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#FFF0EA',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   attachmentHeader: {
     flexDirection: 'row',

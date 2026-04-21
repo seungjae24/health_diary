@@ -4,7 +4,7 @@ import { Platform } from 'react-native';
 
 import { defaultWorkoutActivities } from '../data/workout-library';
 import { getPersistentItem, setPersistentItem } from '../services/storage';
-import { AiInsight, AiSettings, GoalRecord, HealthStore, MealRecord, SupplementPlan, UserProfile, WeightRecord, WorkoutActivityDefinition, WorkoutRecord } from '../types';
+import { AiInsight, AiSettings, GoalRecord, HealthStore, MealPreset, MealRecord, SupplementPlan, UserProfile, WeightRecord, WorkoutActivityDefinition, WorkoutRecord, WorkoutRoutine } from '../types';
 import { getLatestWeight } from '../utils/analytics';
 import { createDefaultStore } from '../utils/sample-data';
 
@@ -45,6 +45,8 @@ type HealthDataContextValue = {
   store: HealthStore;
   exportStoreSnapshot: () => HealthStore;
   importStoreSnapshot: (snapshot: HealthStore) => void;
+  saveMealPresets: (presets: MealPreset[]) => void;
+  saveWorkoutRoutines: (routines: WorkoutRoutine[]) => void;
   addMeal: (record: MealRecord) => void;
   deleteMeal: (id: string) => void;
   addWorkout: (record: WorkoutRecord) => void;
@@ -68,6 +70,8 @@ function withEnvironmentDefaults(store: HealthStore): HealthStore {
   return {
     ...store,
     meals: store.meals || [],
+    mealPresets: store.mealPresets || [],
+    workoutRoutines: store.workoutRoutines || [],
     workouts: store.workouts || [],
     workoutActivities: store.workoutActivities?.length ? store.workoutActivities : defaultWorkoutActivities,
     bookmarkedExercises: store.bookmarkedExercises || [],
@@ -80,6 +84,7 @@ function withEnvironmentDefaults(store: HealthStore): HealthStore {
       sex: store.profile?.sex || '',
       heightCm: store.profile?.heightCm || '',
       birthDate: store.profile?.birthDate || '',
+      activityLevel: store.profile?.activityLevel || '',
       dietPhase: store.profile?.dietPhase || 'lean',
     },
     aiSettings: {
@@ -193,6 +198,12 @@ export function HealthDataProvider({ children }: { children: React.ReactNode }) 
           groqKey: current.aiSettings.groqKey,
         },
       }));
+    },
+    saveMealPresets: (presets) => {
+      setStore((current) => ({ ...current, mealPresets: presets }));
+    },
+    saveWorkoutRoutines: (routines) => {
+      setStore((current) => ({ ...current, workoutRoutines: routines }));
     },
     addMeal: (record) => {
       setStore((current) => {

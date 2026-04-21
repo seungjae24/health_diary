@@ -3,9 +3,9 @@ import { addMonths, subMonths } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
+import { Alert, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 
-import { defaultWorkoutActivities, strengthCategoryLabels, workoutExerciseLibrary } from '../data/workout-library';
+import { defaultWorkoutActivities, ExerciseDefinition, strengthCategoryLabels, workoutExerciseLibrary } from '../data/workout-library';
 import { ScreenFrame } from '../components/screen-frame';
 import {
   ChoiceChip,
@@ -19,7 +19,7 @@ import {
 import { useHealthData } from '../context/health-data-context';
 import { useGlobalUi } from '../context/global-ui-context';
 import { fontFamily, palette } from '../theme';
-import { StrengthExerciseCategory, StrengthExerciseEntry, StrengthSetEntry, WorkoutKind, WorkoutSessionType } from '../types';
+import { StrengthExerciseCategory, StrengthExerciseEntry, StrengthSetEntry, WorkoutKind, WorkoutRoutine, WorkoutSessionType } from '../types';
 import { buildWorkoutCalendar, getWorkoutCount, getWorkoutMinutes } from '../utils/analytics';
 import {
   formatDistanceKm,
@@ -128,15 +128,43 @@ function createStrengthSet(): StrengthSetEntry {
   };
 }
 
-function calculateStrengthSummary(exercises: StrengthExerciseEntry[]) {
+function getExerciseDefinition(exerciseId: string) {
+  return workoutExerciseLibrary.find((item) => item.id === exerciseId);
+}
+
+function estimateExerciseLoadKg(definition: ExerciseDefinition | undefined, set: StrengthSetEntry, bodyWeightKg: number) {
+  if (definition?.trackingMode === 'reps-only') {
+    return Math.round((bodyWeightKg || 0) * (definition.bodyweightRatio || 0) * 10) / 10;
+  }
+  return set.weightKg || 0;
+}
+
+function formatExerciseSetLine(
+  exercise: StrengthExerciseEntry,
+  set: StrengthSetEntry,
+  bodyWeightKg: number,
+  index: number,
+) {
+  const definition = getExerciseDefinition(exercise.exerciseId);
+  const estimatedLoad = estimateExerciseLoadKg(definition, set, bodyWeightKg);
+  if (definition?.trackingMode === 'reps-only') {
+    return `${index + 1}세트 체중기반 약 ${estimatedLoad}kg x ${set.reps || 0}`;
+  }
+  return `${index + 1}세트 ${set.weightKg || 0}kg x ${set.reps || 0}`;
+}
+
+function calculateExerciseVolume(exercise: StrengthExerciseEntry, bodyWeightKg: number) {
+  const definition = getExerciseDefinition(exercise.exerciseId);
+  return exercise.sets.reduce(
+    (sum, set) => sum + estimateExerciseLoadKg(definition, set, bodyWeightKg) * (set.reps || 0),
+    0,
+  );
+}
+
+function calculateStrengthSummary(exercises: StrengthExerciseEntry[], bodyWeightKg: number) {
   const totalSets = exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0);
   const totalVolumeKg = exercises.reduce(
-    (sum, exercise) =>
-      sum +
-      exercise.sets.reduce(
-        (exerciseSum, set) => exerciseSum + (set.weightKg || 0) * (set.reps || 0),
-        0,
-      ),
+    (sum, exercise) => sum + calculateExerciseVolume(exercise, bodyWeightKg),
     0,
   );
   return {
@@ -151,11 +179,7 @@ function estimateStrengthCalories(durationMinutes: number, totalSets: number) {
   return Math.round(durationMinutes * 4.6 + totalSets * 3.5);
 }
 
-function calculateExerciseVolume(exercise: StrengthExerciseEntry) {
-  return exercise.sets.reduce((sum, set) => sum + (set.weightKg || 0) * (set.reps || 0), 0);
-}
-
-function getBodyPartStats(workouts: any[]) {
+function getBodyPartStats(workouts: any[], bodyWeightKg: number) {
   const stats = new Map<
     StrengthExerciseCategory | 'cardio',
     { sets: number; volume: number; exerciseCount: number }
@@ -166,7 +190,7 @@ function getBodyPartStats(workouts: any[]) {
       workout.strength.exercises.forEach((exercise: StrengthExerciseEntry) => {
         const current = stats.get(exercise.category) || { sets: 0, volume: 0, exerciseCount: 0 };
         current.sets += exercise.sets.length;
-        current.volume += calculateExerciseVolume(exercise);
+        current.volume += calculateExerciseVolume(exercise, bodyWeightKg);
         current.exerciseCount += 1;
         stats.set(exercise.category, current);
       });
@@ -239,61 +263,41 @@ function formatPaceInputValue(value?: number | null) {
   return `${normalizedMinutes}'${String(normalizedSeconds).padStart(2, '0')}''`;
 }
 
-function ExerciseArt({ category }: { category: StrengthExerciseCategory }) {
-  const icon =
-    category === 'lower'
-      ? 'move'
-      : category === 'chest'
-        ? 'maximize-2'
-        : category === 'back'
-          ? 'corner-up-left'
-          : category === 'shoulder'
-            ? 'navigation'
-            : category === 'arms'
-              ? 'git-branch'
-              : category === 'core'
-                ? 'target'
-                : category === 'cardio'
-                  ? 'wind'
-                  : 'activity';
-  const tint =
-    category === 'lower'
-      ? '#F7E3D7'
-      : category === 'chest'
-        ? '#E4EDFF'
-        : category === 'back'
-          ? '#E0F2EC'
-          : category === 'shoulder'
-            ? '#FFF0D9'
-            : category === 'arms'
-              ? '#F0E6FF'
-              : category === 'core'
-                ? '#FFE5EA'
-                : category === 'cardio'
-                  ? '#DFF4FF'
-                  : '#EEF1F3';
+const exerciseBodyImageByCategory = {
+  chest: require('../body_images/chest.jpg'),
+  back: require('../body_images/back.jpg'),
+  shoulder: require('../body_images/shoulder.jpg'),
+  arms: require('../body_images/arm.jpg'),
+  core: require('../body_images/core.jpg'),
+  lower: require('../body_images/leg.jpg'),
+  cardio: require('../body_images/run.jpg'),
+  other: require('../body_images/else.jpg'),
+} as const;
+
+const exerciseBodyTintByCategory: Record<StrengthExerciseCategory, string> = {
+  lower: '#F7E3D7',
+  chest: '#E4EDFF',
+  back: '#E0F2EC',
+  shoulder: '#FFF0D9',
+  arms: '#F0E6FF',
+  core: '#FFE5EA',
+  cardio: '#DFF4FF',
+  other: '#EEF1F3',
+};
+
+function ExerciseArt({ definition: _definition, category }: { definition?: ExerciseDefinition; category: StrengthExerciseCategory }) {
+  const imageSource = exerciseBodyImageByCategory[category] || exerciseBodyImageByCategory.other;
+  const tint = exerciseBodyTintByCategory[category];
 
   return (
     <View style={[styles.exerciseArtWrap, { backgroundColor: tint }]}>
-      <View style={styles.exerciseArtBody}>
-        <View style={styles.exerciseArtHead} />
-        <View style={styles.exerciseArtShoulders}>
-          <View style={[styles.exerciseArtArm, styles.exerciseArtArmLeft]} />
-          <View style={styles.exerciseArtTorso} />
-          <View style={[styles.exerciseArtArm, styles.exerciseArtArmRight]} />
-        </View>
-        <View style={styles.exerciseArtLegs}>
-          <View style={[styles.exerciseArtLeg, styles.exerciseArtLegLeft]} />
-          <View style={[styles.exerciseArtLeg, styles.exerciseArtLegRight]} />
-        </View>
-      </View>
-      <Feather name={icon as any} size={16} color={palette.ink} style={styles.exerciseArtIcon} />
+      <Image source={imageSource} style={styles.exerciseArtImage} contentFit="contain" />
     </View>
   );
 }
 
 export function WorkoutsScreen({ route, navigation }: any) {
-  const { store, addWorkout, deleteWorkout, saveWorkoutActivities, toggleExerciseBookmark } = useHealthData();
+  const { store, addWorkout, deleteWorkout, saveWorkoutActivities, saveWorkoutRoutines, toggleExerciseBookmark } = useHealthData();
   const { openAddMenu } = useGlobalUi();
   const [focusMonth, setFocusMonth] = useState(new Date());
   const [query, setQuery] = useState('');
@@ -305,6 +309,7 @@ export function WorkoutsScreen({ route, navigation }: any) {
   const [composerVisible, setComposerVisible] = useState(false);
   const [activityManagerVisible, setActivityManagerVisible] = useState(false);
   const [exercisePickerVisible, setExercisePickerVisible] = useState(false);
+  const [routineManagerVisible, setRoutineManagerVisible] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [draft, setDraft] = useState(createWorkoutDraft());
   const [aiSummary, setAiSummary] = useState<WorkoutAiSummary | null>(null);
@@ -315,6 +320,8 @@ export function WorkoutsScreen({ route, navigation }: any) {
   const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
   const [exerciseInfoId, setExerciseInfoId] = useState<string | null>(null);
   const [recentExerciseId, setRecentExerciseId] = useState<string | null>(null);
+  const [routineDraftName, setRoutineDraftName] = useState('');
+  const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
   const [reportPeriod, setReportPeriod] = useState<'today' | 'week' | 'month'>('today');
   const [reportLoading, setReportLoading] = useState(false);
   const [reportText, setReportText] = useState('');
@@ -355,13 +362,14 @@ export function WorkoutsScreen({ route, navigation }: any) {
           : (record.activityLabel || record.title) === activeFilter;
     return textMatch && filterMatch;
   });
+  const latestBodyWeightKg = sortByDateDesc(store.weights)[0]?.valueKg || 0;
   const workoutCalendar = buildWorkoutCalendar(focusMonth, store.workouts);
   const selectedDateWorkouts = selectedWorkoutDate
     ? sortByDateDesc(store.workouts).filter((record) => record.date === selectedWorkoutDate)
     : [];
   const selectedDateBodyPartStats = useMemo(
-    () => getBodyPartStats(selectedDateWorkouts),
-    [selectedDateWorkouts],
+    () => getBodyPartStats(selectedDateWorkouts, latestBodyWeightKg),
+    [latestBodyWeightKg, selectedDateWorkouts],
   );
   const calendarScores = useMemo(
     () =>
@@ -429,13 +437,13 @@ export function WorkoutsScreen({ route, navigation }: any) {
         return {
           workout,
           exercise,
-          volume: calculateExerciseVolume(exercise),
+          volume: calculateExerciseVolume(exercise, latestBodyWeightKg),
         };
       }
     }
 
     return null;
-  }, [recentExerciseId, store.workouts]);
+  }, [latestBodyWeightKg, recentExerciseId, store.workouts]);
   const todayKey = todayDateKey();
   const reportSourceWorkouts = useMemo(() => {
     if (reportPeriod === 'today') {
@@ -464,8 +472,8 @@ export function WorkoutsScreen({ route, navigation }: any) {
     return { totalMinutes, totalCalories, strengthSessions, cardioSessions, totalVolume, totalSets };
   }, [reportSourceWorkouts]);
   const reportBodyPartStats = useMemo(
-    () => getBodyPartStats(reportSourceWorkouts),
-    [reportSourceWorkouts],
+    () => getBodyPartStats(reportSourceWorkouts, latestBodyWeightKg),
+    [latestBodyWeightKg, reportSourceWorkouts],
   );
   const todayWorkouts = sortByDateDesc(store.workouts).filter((workout) => workout.date === todayKey);
   const todayWorkoutComment = useMemo(() => {
@@ -498,6 +506,20 @@ export function WorkoutsScreen({ route, navigation }: any) {
         : store.aiSettings.imageAnalysisProvider === 'groq'
           ? `Groq · ${store.aiSettings.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct'}`
           : `Gemini · ${store.aiSettings.geminiModel || 'gemini-2.5-flash'}`;
+  const calendarSwipe = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 14 && Math.abs(gesture.dy) < 20,
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx > 40) {
+            setFocusMonth((current) => subMonths(current, 1));
+          } else if (gesture.dx < -40) {
+            setFocusMonth((current) => addMonths(current, 1));
+          }
+        },
+      }),
+    [],
+  );
 
   function getProviderModelLabel(provider: string) {
     if (provider === 'openai') {
@@ -522,6 +544,9 @@ export function WorkoutsScreen({ route, navigation }: any) {
   async function openComposer(initialData?: any, forcedImage?: string) {
     const draftBase = createWorkoutDraft();
     setAiSummary(null);
+    setRoutineDraftName('');
+    setEditingRoutineId(null);
+    setSelectedExerciseIds([]);
     const existingSessionType: WorkoutSessionType =
       initialData?.sessionType || (initialData?.kind === 'strength' ? 'strength' : 'cardio');
     setDraft({
@@ -856,7 +881,20 @@ export function WorkoutsScreen({ route, navigation }: any) {
       ...current,
       strengthExercises: current.strengthExercises.map((exercise) =>
         exercise.exerciseId === exerciseId
-          ? { ...exercise, sets: [...exercise.sets, createStrengthSet()] }
+          ? {
+              ...exercise,
+              sets: [
+                ...exercise.sets,
+                (() => {
+                  const lastSet = exercise.sets[exercise.sets.length - 1];
+                  return {
+                    id: makeId('set'),
+                    weightKg: lastSet?.weightKg,
+                    reps: lastSet?.reps,
+                  };
+                })(),
+              ],
+            }
           : exercise,
       ),
     }));
@@ -894,6 +932,82 @@ export function WorkoutsScreen({ route, navigation }: any) {
           : exercise,
       ),
     }));
+  }
+
+  function cloneRoutineExercise(exercise: StrengthExerciseEntry): StrengthExerciseEntry {
+    return {
+      ...exercise,
+      sets: exercise.sets.map((set) => ({
+        id: makeId('set'),
+        weightKg: set.weightKg,
+        reps: set.reps,
+      })),
+    };
+  }
+
+  function saveCurrentRoutine() {
+    if (!routineDraftName.trim() || draft.strengthExercises.length === 0) {
+      Alert.alert('루틴 저장 실패', '루틴 이름과 운동 구성을 먼저 준비해 주세요.');
+      return;
+    }
+
+    const nextRoutine: WorkoutRoutine = {
+      id: editingRoutineId || makeId('routine'),
+      name: routineDraftName.trim(),
+      exercises: draft.strengthExercises.map(cloneRoutineExercise),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextRoutines = editingRoutineId
+      ? store.workoutRoutines.map((routine) => (routine.id === editingRoutineId ? nextRoutine : routine))
+      : [nextRoutine, ...store.workoutRoutines];
+
+    saveWorkoutRoutines(nextRoutines);
+    setRoutineDraftName('');
+    setEditingRoutineId(null);
+    Alert.alert('루틴 저장 완료', '근력 운동 루틴을 저장했습니다.');
+  }
+
+  function loadRoutine(routineId: string) {
+    const routine = store.workoutRoutines.find((item) => item.id === routineId);
+    if (!routine) {
+      return;
+    }
+
+    setDraft((current) => ({
+      ...current,
+      sessionType: 'strength',
+      kind: 'strength',
+      title: current.title || routine.name,
+      strengthExercises: routine.exercises.map(cloneRoutineExercise),
+    }));
+    setRoutineManagerVisible(false);
+  }
+
+  function startEditRoutine(routineId: string) {
+    const routine = store.workoutRoutines.find((item) => item.id === routineId);
+    if (!routine) {
+      return;
+    }
+
+    setDraft((current) => ({
+      ...current,
+      sessionType: 'strength',
+      kind: 'strength',
+      title: current.title || routine.name,
+      strengthExercises: routine.exercises.map(cloneRoutineExercise),
+    }));
+    setRoutineDraftName(routine.name);
+    setEditingRoutineId(routine.id);
+    setRoutineManagerVisible(false);
+  }
+
+  function deleteRoutine(routineId: string) {
+    saveWorkoutRoutines(store.workoutRoutines.filter((routine) => routine.id !== routineId));
+    if (editingRoutineId === routineId) {
+      setEditingRoutineId(null);
+      setRoutineDraftName('');
+    }
   }
 
   async function buildWorkoutReport(period: 'today' | 'week' | 'month') {
@@ -937,20 +1051,19 @@ export function WorkoutsScreen({ route, navigation }: any) {
       const text = await generateAiResponse(
         store.aiSettings,
         store,
-        `당신은 프로 수준의 운동 코치입니다. ${periodLabel} 운동 기록을 매우 자세하고 실전적으로 분석해 주세요.
+        `당신은 프로 수준의 운동 코치입니다. 뻔한 말 금지, 과한 칭찬 금지, 숫자 근거 포함.
+${periodLabel} 운동 기록을 실전적으로 분석하세요.
+한국어로 2~3문장, 140자 안팎으로만 답하세요.
 목표:
 ${goalLines}
 
 운동 로그:
 ${workoutLines}
 
-다음 형식으로 한국어로 답하세요:
-1. 전체 평가
-2. 잘한 점
-3. 아쉬운 점
-4. Goal 기준 현재 상태
-5. 다음 ${period === 'today' ? '운동' : period === 'week' ? '1주일' : '한 달'} 계획
-6. 부상/회복/볼륨 관점 주의점`,
+다음 요소를 자연스럽게 포함하세요:
+1. 현재 분배나 볼륨의 질적 평가
+2. 목표 기준 가장 아쉬운 한 지점
+3. 다음 ${period === 'today' ? '운동' : period === 'week' ? '1주일' : '한 달'}에 바로 고칠 한 가지`,
       );
       setReportText(text);
     } catch {
@@ -975,7 +1088,11 @@ ${workoutLines}
       .map((workout) => {
         const strengthDetails = workout.strength?.exercises?.length
           ? workout.strength.exercises
-              .map((exercise) => `${exercise.name} ${exercise.sets.map((set) => `${set.weightKg || 0}kgx${set.reps || 0}`).join(', ')}`)
+              .map((exercise) =>
+                `${exercise.name} ${exercise.sets
+                  .map((set, index) => formatExerciseSetLine(exercise, set, latestBodyWeightKg, index).replace('세트 ', ''))
+                  .join(', ')}`,
+              )
               .join(' / ')
           : workout.activityLabel || workout.title;
         return `- ${workout.title}: ${workout.durationMinutes}분, ${strengthDetails}, 칼로리 ${workout.caloriesBurned || 0}`;
@@ -1035,7 +1152,7 @@ ${bodyPartLines}
     const durationMinutes =
       durationFromForm > 0 ? durationFromForm : inferredDuration;
 
-    const strengthSummary = calculateStrengthSummary(draft.strengthExercises);
+    const strengthSummary = calculateStrengthSummary(draft.strengthExercises, latestBodyWeightKg);
     const inferredStrengthDuration =
       draft.sessionType === 'strength' && strengthSummary.totalSets > 0
         ? Math.max(20, strengthSummary.totalSets * 3)
@@ -1143,19 +1260,26 @@ ${bodyPartLines}
         actionLabel="운동 추가"
         onAction={openAddMenu}
       >
-        <View style={styles.metricsRow}>
-          <MetricPill
-            label="7일 부하"
-            value={formatDurationMinutes(getWorkoutMinutes(store.workouts, 7))}
-            tone="good"
-          />
-          <MetricPill label="러닝 횟수" value={`${getWorkoutCount(store.workouts, 14, 'running')}회`} />
-          <MetricPill
-            label="근력 세션"
-            value={`${store.workouts.filter((item) => item.sessionType === 'strength' || item.kind === 'strength').length}회`}
-            tone="warm"
-          />
-        </View>
+        <SurfaceCard style={styles.reportCard}>
+          <View style={styles.inlineHeader}>
+            <View>
+              <Text style={styles.detailTitle}>Workout Coach Summary</Text>
+              <Text style={styles.detailCaption}>기간별 부하와 분배를 코치 시점으로 짧고 정확하게 정리합니다.</Text>
+            </View>
+            {reportLoading ? <ActivityIndicator size="small" color={palette.sky} /> : null}
+          </View>
+          <View style={styles.filterRow}>
+            <ChoiceChip label="오늘" selected={reportPeriod === 'today'} onPress={() => setReportPeriod('today')} />
+            <ChoiceChip label="주간" selected={reportPeriod === 'week'} onPress={() => setReportPeriod('week')} />
+            <ChoiceChip label="월간" selected={reportPeriod === 'month'} onPress={() => setReportPeriod('month')} />
+          </View>
+          <View style={styles.metricsRow}>
+            <MetricPill label="운동 수" value={`${reportSourceWorkouts.length}회`} tone="good" />
+            <MetricPill label="총 시간" value={formatDurationMinutes(reportSummary.totalMinutes)} />
+            <MetricPill label="총 볼륨" value={`${reportSummary.totalVolume}kg`} tone="warm" />
+          </View>
+          <Text style={styles.reportBody}>{reportText || todayWorkoutComment}</Text>
+        </SurfaceCard>
 
         <View style={styles.toolbarRow}>
           <PrimaryButton label="운동 기록 작성하기" onPress={() => openComposer()} icon="plus" />
@@ -1173,21 +1297,12 @@ ${bodyPartLines}
           ))}
         </View>
 
-        <SurfaceCard style={styles.reportCard}>
-          <View style={styles.inlineHeader}>
-            <View>
-              <Text style={styles.detailTitle}>오늘의 운동 코멘트</Text>
-              <Text style={styles.detailCaption}>오늘 한 운동과 직전 기록, 목표 흐름을 같이 봅니다.</Text>
-            </View>
-          </View>
-          <Text style={styles.reportBody}>{todayWorkoutComment}</Text>
-        </SurfaceCard>
-
+        <View {...calendarSwipe.panHandlers}>
         <SurfaceCard style={styles.calendarCard}>
           <View style={styles.monthHeader}>
-            <View>
+            <View style={styles.monthHeading}>
               <Text style={styles.monthLabel}>{formatMonthYear(focusMonth)}</Text>
-              <Text style={styles.monthCaption}>운동한 날과 종류를 달력에서 먼저 훑어보세요.</Text>
+              <Text style={styles.monthCaption}>좌우로 밀어 월을 넘기고 날짜를 눌러 그날 운동을 확인해 보세요.</Text>
             </View>
             <View style={styles.monthActions}>
               <Pressable onPress={() => setFocusMonth((current) => subMonths(current, 1))} style={styles.monthButton}>
@@ -1235,40 +1350,7 @@ ${bodyPartLines}
               ))}
             </View>
         </SurfaceCard>
-
-        <SurfaceCard style={styles.reportCard}>
-          <View style={styles.inlineHeader}>
-            <View>
-              <Text style={styles.detailTitle}>AI Workout Report</Text>
-              <Text style={styles.detailCaption}>오늘, 최근 7일, 최근 30일 흐름을 코치 시점으로 정리합니다.</Text>
-            </View>
-            {reportLoading ? <ActivityIndicator size="small" color={palette.sky} /> : null}
-          </View>
-          <View style={styles.filterRow}>
-            <ChoiceChip label="오늘" selected={reportPeriod === 'today'} onPress={() => setReportPeriod('today')} />
-            <ChoiceChip label="주간" selected={reportPeriod === 'week'} onPress={() => setReportPeriod('week')} />
-            <ChoiceChip label="월간" selected={reportPeriod === 'month'} onPress={() => setReportPeriod('month')} />
-          </View>
-          <View style={styles.metricsRow}>
-            <MetricPill label="운동 수" value={`${reportSourceWorkouts.length}회`} tone="good" />
-            <MetricPill label="총 시간" value={formatDurationMinutes(reportSummary.totalMinutes)} />
-            <MetricPill label="총 볼륨" value={`${reportSummary.totalVolume}kg`} tone="warm" />
-          </View>
-          {reportBodyPartStats.length ? (
-            <View style={styles.bodyPartStatsWrap}>
-              {reportBodyPartStats.slice(0, 6).map((item) => (
-                <View key={item.category} style={styles.bodyPartStatCard}>
-                  <Text style={styles.bodyPartStatLabel}>{item.label}</Text>
-                  <Text style={styles.bodyPartStatValue}>{item.sets ? `${item.sets}세트` : `${item.exerciseCount}회`}</Text>
-                  {item.volume ? <Text style={styles.bodyPartStatMeta}>{item.volume}kg</Text> : null}
-                </View>
-              ))}
-            </View>
-          ) : null}
-          <Text style={styles.reportBody}>
-            {reportText || '아직 분석 내용이 없습니다.'}
-          </Text>
-        </SurfaceCard>
+        </View>
 
         <EmptyState
           title={workouts.length ? '달력에서 날짜를 눌러 운동 보기' : '운동 기록이 아직 없습니다'}
@@ -1433,11 +1515,13 @@ ${bodyPartLines}
               label="유산소 운동"
               selected={draft.sessionType === 'cardio'}
               onPress={() => setDraft((current) => ({ ...current, sessionType: 'cardio', kind: 'running' }))}
+              size="sm"
             />
             <ChoiceChip
               label="근력 운동"
               selected={draft.sessionType === 'strength'}
               onPress={() => setDraft((current) => ({ ...current, sessionType: 'strength', kind: 'strength' }))}
+              size="sm"
             />
           </View>
 
@@ -1445,7 +1529,7 @@ ${bodyPartLines}
             <>
               <View style={styles.inlineHeader}>
                 <Text style={styles.inlineTitle}>운동 종류</Text>
-                <PrimaryButton label="운동 종류 관리" onPress={() => setActivityManagerVisible(true)} icon="sliders" variant="ghost" />
+                <PrimaryButton label="운동 종류 관리" onPress={() => setActivityManagerVisible(true)} icon="sliders" variant="ghost" size="sm" />
               </View>
               <View style={styles.filterRow}>
                 {activityOptions.map((activity) => (
@@ -1468,21 +1552,46 @@ ${bodyPartLines}
             </>
           ) : (
             <>
-              <View style={styles.inlineHeader}>
-                <Text style={styles.inlineTitle}>근력 운동 선택</Text>
-                <PrimaryButton label="운동 추가" onPress={() => setExercisePickerVisible(true)} icon="plus" variant="outline" />
-              </View>
+              <SurfaceCard style={styles.strengthToolCard}>
+                <View style={styles.inlineHeader}>
+                  <View style={styles.inlineHeading}>
+                    <Text style={styles.inlineTitle}>근력 운동 선택</Text>
+                    <Text style={styles.strengthToolCaption}>운동 추가와 루틴 저장/불러오기를 한 번에 관리할 수 있어요.</Text>
+                  </View>
+                  <View style={styles.strengthToolActions}>
+                    <PrimaryButton label="운동 추가" onPress={() => setExercisePickerVisible(true)} icon="plus" variant="outline" size="sm" />
+                    <PrimaryButton label="루틴" onPress={() => setRoutineManagerVisible(true)} icon="layers" variant="ghost" size="sm" />
+                  </View>
+                </View>
+                <View style={styles.routineSaveRow}>
+                  <FieldInput
+                    label={editingRoutineId ? '루틴 수정 이름' : '루틴 이름'}
+                    placeholder="예: 상체 A / 하체 데이"
+                    value={routineDraftName}
+                    onChangeText={setRoutineDraftName}
+                    style={{ flex: 1 }}
+                  />
+                  <View style={styles.routineSaveActions}>
+                    <PrimaryButton label={editingRoutineId ? '수정 저장' : '루틴 저장'} onPress={saveCurrentRoutine} icon="save" variant="outline" size="sm" />
+                  </View>
+                </View>
+              </SurfaceCard>
               {draft.strengthExercises.length ? (
                 <View style={styles.selectedExerciseList}>
                   {draft.strengthExercises.map((exercise) => {
-                    const definition = workoutExerciseLibrary.find((item) => item.id === exercise.exerciseId);
+                    const definition = getExerciseDefinition(exercise.exerciseId);
+                    const isBodyweightExercise = definition?.trackingMode === 'reps-only';
+                    const estimatedLoadKg = estimateExerciseLoadKg(definition, { id: 'preview' }, latestBodyWeightKg);
                     return (
                       <SurfaceCard key={exercise.exerciseId} style={styles.exerciseCard}>
                         <View style={styles.exerciseCardHeader}>
-                          <ExerciseArt category={exercise.category} />
+                          <ExerciseArt definition={definition} category={exercise.category} />
                           <View style={{ flex: 1 }}>
                             <Text style={styles.exerciseCardTitle}>{exercise.name}</Text>
-                            <Text style={styles.exerciseCardMeta}>{strengthCategoryLabels[exercise.category]}</Text>
+                            <Text style={styles.exerciseCardMeta}>
+                              {strengthCategoryLabels[exercise.category]} · {definition?.equipmentLabel || '운동'}
+                              {isBodyweightExercise ? ' · 횟수 입력' : ' · 무게/횟수 입력'}
+                            </Text>
                           </View>
                           <Pressable onPress={() => setExerciseInfoId(exercise.exerciseId)} hitSlop={12}>
                             <Feather name="info" size={18} color={palette.sky} />
@@ -1495,8 +1604,16 @@ ${bodyPartLines}
                           </Pressable>
                         </View>
                         {definition ? <Text style={styles.exerciseInstruction}>{definition.instructions}</Text> : null}
+                        {isBodyweightExercise ? (
+                          <View style={styles.bodyweightHintChip}>
+                            <Feather name="user" size={14} color={palette.mintDeep} />
+                            <Text style={styles.bodyweightHintText}>
+                              현재 체중 기준 1회당 약 {estimatedLoadKg}kg 부하로 자동 계산돼요.
+                            </Text>
+                          </View>
+                        ) : null}
                         <View style={styles.exerciseVolumeRow}>
-                          <Text style={styles.exerciseVolumeText}>현재 볼륨 {calculateExerciseVolume(exercise)}kg</Text>
+                          <Text style={styles.exerciseVolumeText}>현재 볼륨 {calculateExerciseVolume(exercise, latestBodyWeightKg)}kg</Text>
                           {(() => {
                             const latest = sortByDateDesc(store.workouts)
                               .flatMap((workout) =>
@@ -1507,7 +1624,7 @@ ${bodyPartLines}
                             if (!latest) {
                               return <Text style={styles.exerciseVolumeDelta}>첫 기록</Text>;
                             }
-                            const delta = calculateExerciseVolume(exercise) - calculateExerciseVolume(latest.item);
+                            const delta = calculateExerciseVolume(exercise, latestBodyWeightKg) - calculateExerciseVolume(latest.item, latestBodyWeightKg);
                             return (
                               <Text style={[styles.exerciseVolumeDelta, delta >= 0 ? styles.exerciseVolumeDeltaUp : styles.exerciseVolumeDeltaDown]}>
                                 최근 대비 {delta >= 0 ? '+' : ''}{delta}kg
@@ -1515,31 +1632,46 @@ ${bodyPartLines}
                             );
                           })()}
                         </View>
-                        {exercise.sets.map((set, setIndex) => (
-                          <View key={set.id} style={styles.setRow}>
-                            <Text style={styles.setIndex}>{setIndex + 1}세트</Text>
-                            <TextInput
-                              value={set.weightKg ? String(set.weightKg) : ''}
-                              onChangeText={(value) => updateSetField(exercise.exerciseId, set.id, 'weightKg', value)}
-                              placeholder="kg"
-                              keyboardType="decimal-pad"
-                              style={styles.setInput}
-                            />
-                            <TextInput
-                              value={set.reps ? String(set.reps) : ''}
-                              onChangeText={(value) => updateSetField(exercise.exerciseId, set.id, 'reps', value)}
-                              placeholder="회"
-                              keyboardType="decimal-pad"
-                              style={styles.setInput}
-                            />
-                            <Pressable onPress={() => setRecentExerciseId(exercise.exerciseId)} hitSlop={10}>
-                              <Text style={styles.recentLink}>최근</Text>
-                            </Pressable>
-                            <Pressable onPress={() => removeSet(exercise.exerciseId, set.id)} hitSlop={10}>
-                              <Feather name="minus-circle" size={18} color={palette.coral} />
-                            </Pressable>
-                          </View>
-                        ))}
+                        <View style={styles.setList}>
+                          {exercise.sets.map((set, setIndex) => (
+                            <View key={set.id} style={styles.setCard}>
+                              <View style={styles.setCardHeader}>
+                                <Text style={styles.setIndex}>{setIndex + 1}세트</Text>
+                                <View style={styles.setCardActions}>
+                                  <Pressable onPress={() => setRecentExerciseId(exercise.exerciseId)} hitSlop={10}>
+                                    <Text style={styles.recentLink}>최근 기록</Text>
+                                  </Pressable>
+                                  <Pressable onPress={() => removeSet(exercise.exerciseId, set.id)} hitSlop={10}>
+                                    <Feather name="minus-circle" size={18} color={palette.coral} />
+                                  </Pressable>
+                                </View>
+                              </View>
+                              <View style={styles.setInputsRow}>
+                                {isBodyweightExercise ? (
+                                  <View style={styles.bodyweightSetBadge}>
+                                    <Text style={styles.bodyweightSetLabel}>자동 무게</Text>
+                                    <Text style={styles.bodyweightSetValue}>{estimatedLoadKg}kg</Text>
+                                  </View>
+                                ) : (
+                                  <TextInput
+                                    value={set.weightKg ? String(set.weightKg) : ''}
+                                    onChangeText={(value) => updateSetField(exercise.exerciseId, set.id, 'weightKg', value)}
+                                    placeholder="무게 kg"
+                                    keyboardType="decimal-pad"
+                                    style={styles.setInput}
+                                  />
+                                )}
+                                <TextInput
+                                  value={set.reps ? String(set.reps) : ''}
+                                  onChangeText={(value) => updateSetField(exercise.exerciseId, set.id, 'reps', value)}
+                                  placeholder={isBodyweightExercise ? '횟수' : '횟수 reps'}
+                                  keyboardType="decimal-pad"
+                                  style={styles.setInput}
+                                />
+                              </View>
+                            </View>
+                          ))}
+                        </View>
                         <PrimaryButton label="세트 추가" onPress={() => addSet(exercise.exerciseId)} icon="plus" variant="ghost" />
                       </SurfaceCard>
                     );
@@ -1738,8 +1870,61 @@ ${bodyPartLines}
       </ModalSheet>
 
       <ModalSheet
+        visible={routineManagerVisible}
+        title="루틴 관리"
+        subtitle="저장된 루틴을 불러오거나 수정하고, 필요 없는 루틴은 정리할 수 있어요."
+        onClose={() => setRoutineManagerVisible(false)}
+      >
+        <SurfaceCard style={styles.routineIntroCard}>
+          <Text style={styles.inlineTitle}>저장된 루틴 {store.workoutRoutines.length}개</Text>
+          <Text style={styles.routineIntroText}>
+            루틴을 불러오면 운동, 세트 수, 무게, 횟수까지 그대로 들어오고 이후엔 자유롭게 수정할 수 있어요.
+          </Text>
+        </SurfaceCard>
+        {store.workoutRoutines.length ? (
+          <View style={styles.routineList}>
+            {store.workoutRoutines.map((routine) => {
+              const totalSets = routine.exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0);
+              const preview = routine.exercises.slice(0, 3).map((exercise) => exercise.name).join(' · ');
+              return (
+                <SurfaceCard key={routine.id} style={styles.routineCard}>
+                  <View style={styles.routineCardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.routineCardTitle}>{routine.name}</Text>
+                      <Text style={styles.routineCardMeta}>
+                        {routine.exercises.length}개 운동 · {totalSets}세트 · {formatLongDate(routine.updatedAt)}
+                      </Text>
+                    </View>
+                    <View style={styles.routineCardActions}>
+                      <Pressable style={styles.routineActionChip} onPress={() => loadRoutine(routine.id)}>
+                        <Feather name="download" size={14} color={palette.mintDeep} />
+                        <Text style={styles.routineActionText}>불러오기</Text>
+                      </Pressable>
+                      <Pressable style={styles.routineActionChip} onPress={() => startEditRoutine(routine.id)}>
+                        <Feather name="edit-3" size={14} color={palette.sky} />
+                        <Text style={styles.routineActionText}>수정</Text>
+                      </Pressable>
+                      <Pressable style={styles.routineDeleteChip} onPress={() => deleteRoutine(routine.id)}>
+                        <Feather name="trash-2" size={14} color={palette.coral} />
+                      </Pressable>
+                    </View>
+                  </View>
+                  <Text style={styles.routineCardPreview}>
+                    {preview}
+                    {routine.exercises.length > 3 ? ` 외 ${routine.exercises.length - 3}개` : ''}
+                  </Text>
+                </SurfaceCard>
+              );
+            })}
+          </View>
+        ) : (
+          <EmptyState title="저장된 루틴 없음" body="근력 운동을 구성한 뒤 이름을 적고 루틴 저장을 누르면 여기에 쌓여요." />
+        )}
+      </ModalSheet>
+
+      <ModalSheet
         visible={activityManagerVisible}
-        title="유산소 종류 관리"
+        title="운동 종류 관리"
         subtitle="자주 하는 운동을 직접 추가하고, 필요 없는 항목은 제거할 수 있어요."
         onClose={() => setActivityManagerVisible(false)}
       >
@@ -1797,7 +1982,7 @@ ${bodyPartLines}
                   if (!exercise) return null;
                   return (
                     <View key={exerciseId} style={styles.selectionDockItem}>
-                      <ExerciseArt category={exercise.category} />
+                      <ExerciseArt definition={exercise} category={exercise.category} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.exerciseCardTitle}>{exercise.name}</Text>
                         <Text style={styles.exerciseCardMeta}>{index + 1}번째 순서</Text>
@@ -1846,7 +2031,7 @@ ${bodyPartLines}
           {strengthLibrary.map((exercise) => (
             <SurfaceCard key={exercise.id} style={styles.exercisePickerCard}>
               <View style={styles.exerciseCardHeader}>
-                <ExerciseArt category={exercise.category} />
+                <ExerciseArt definition={exercise} category={exercise.category} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.exerciseCardTitle}>{exercise.name}</Text>
                   <Text style={styles.exerciseCardMeta}>{strengthCategoryLabels[exercise.category]}</Text>
@@ -1876,7 +2061,7 @@ ${bodyPartLines}
         {selectedExerciseInfo ? (
           <SurfaceCard style={styles.exerciseInfoCard}>
             <View style={styles.exerciseInfoHeader}>
-              <ExerciseArt category={selectedExerciseInfo.category} />
+              <ExerciseArt definition={selectedExerciseInfo} category={selectedExerciseInfo.category} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.exerciseCardTitle}>{selectedExerciseInfo.name}</Text>
                 <Text style={styles.exerciseCardMeta}>{strengthCategoryLabels[selectedExerciseInfo.category]}</Text>
@@ -1896,7 +2081,7 @@ ${bodyPartLines}
         {recentExerciseRecord ? (
           <SurfaceCard style={styles.exerciseInfoCard}>
             <View style={styles.exerciseInfoHeader}>
-              <ExerciseArt category={recentExerciseRecord.exercise.category} />
+              <ExerciseArt definition={getExerciseDefinition(recentExerciseRecord.exercise.exerciseId)} category={recentExerciseRecord.exercise.category} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.exerciseCardTitle}>{recentExerciseRecord.exercise.name}</Text>
                 <Text style={styles.exerciseCardMeta}>
@@ -1906,7 +2091,7 @@ ${bodyPartLines}
             </View>
             <Text style={styles.exerciseInstruction}>
               {recentExerciseRecord.exercise.sets
-                .map((set, index) => `${index + 1}세트 ${set.weightKg || 0}kg x ${set.reps || 0}`)
+                .map((set, index) => formatExerciseSetLine(recentExerciseRecord.exercise, set, latestBodyWeightKg, index))
                 .join(' · ')}
             </Text>
             <Text style={styles.exerciseVolumeText}>최근 볼륨 {recentExerciseRecord.volume}kg</Text>
@@ -1936,6 +2121,107 @@ const styles = StyleSheet.create({
     gap: 14,
     backgroundColor: '#FFF8EF',
     borderColor: '#F1DAB7',
+  },
+  strengthToolCard: {
+    gap: 14,
+    backgroundColor: '#F7FBF8',
+    borderColor: '#D8E9DE',
+  },
+  strengthToolCaption: {
+    marginTop: 4,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.muted,
+  },
+  strengthToolActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    flexShrink: 1,
+    justifyContent: 'flex-start',
+  },
+  routineSaveRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  routineSaveActions: {
+    paddingBottom: 2,
+    alignSelf: 'stretch',
+  },
+  routineIntroCard: {
+    gap: 8,
+    backgroundColor: '#FFF8EF',
+    borderColor: '#F0D9B8',
+  },
+  routineIntroText: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: palette.muted,
+  },
+  routineList: {
+    gap: 12,
+  },
+  routineCard: {
+    gap: 10,
+    padding: 16,
+  },
+  routineCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  routineCardTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 15,
+    color: palette.ink,
+  },
+  routineCardMeta: {
+    marginTop: 4,
+    fontFamily: fontFamily.medium,
+    fontSize: 12,
+    color: palette.muted,
+  },
+  routineCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  routineActionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: '#EDF7F1',
+    borderWidth: 1,
+    borderColor: '#D6EBDD',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  routineActionText: {
+    fontFamily: fontFamily.bold,
+    fontSize: 12,
+    color: palette.ink,
+  },
+  routineDeleteChip: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FFF1F0',
+    borderWidth: 1,
+    borderColor: '#F4D5D1',
+  },
+  routineCardPreview: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: palette.muted,
   },
   reportBody: {
     fontFamily: fontFamily.regular,
@@ -2015,6 +2301,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
     alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  monthHeading: {
+    flex: 1,
+    minWidth: 0,
   },
   monthLabel: {
     fontFamily: fontFamily.bold,
@@ -2030,6 +2321,7 @@ const styles = StyleSheet.create({
   monthActions: {
     flexDirection: 'row',
     gap: 8,
+    flexShrink: 0,
   },
   monthButton: {
     width: 40,
@@ -2253,69 +2545,17 @@ const styles = StyleSheet.create({
     borderColor: '#F0E2C8',
   },
   exerciseArtWrap: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
+    width: 54,
+    height: 54,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    overflow: 'hidden',
   },
-  exerciseArtBody: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  exerciseArtHead: {
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: '#1F2A22',
-    marginBottom: 3,
-  },
-  exerciseArtShoulders: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 4,
-  },
-  exerciseArtTorso: {
-    width: 14,
-    height: 19,
-    borderRadius: 7,
-    backgroundColor: '#1F2A22',
-    marginBottom: 4,
-  },
-  exerciseArtArm: {
-    width: 4,
-    height: 16,
-    borderRadius: 3,
-    backgroundColor: '#1F2A22',
-    marginTop: 2,
-  },
-  exerciseArtArmLeft: {
-    transform: [{ rotate: '20deg' }],
-  },
-  exerciseArtArmRight: {
-    transform: [{ rotate: '-20deg' }],
-  },
-  exerciseArtLegs: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  exerciseArtLeg: {
-    width: 5,
-    height: 16,
-    borderRadius: 3,
-    backgroundColor: '#1F2A22',
-  },
-  exerciseArtLegLeft: {
-    transform: [{ rotate: '8deg' }],
-  },
-  exerciseArtLegRight: {
-    transform: [{ rotate: '-8deg' }],
-  },
-  exerciseArtIcon: {
-    position: 'absolute',
-    right: 7,
-    top: 7,
+  exerciseArtImage: {
+    width: 42,
+    height: 42,
   },
   detailTitle: {
     fontFamily: fontFamily.bold,
@@ -2337,6 +2577,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: 12,
+    flexWrap: 'wrap',
+  },
+  inlineHeading: {
+    flex: 1,
+    minWidth: 0,
   },
   inlineTitle: {
     fontFamily: fontFamily.bold,
@@ -2397,6 +2642,73 @@ const styles = StyleSheet.create({
   },
   exerciseVolumeDeltaDown: {
     color: palette.coral,
+  },
+  bodyweightHintChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: '#EEF8F2',
+    borderWidth: 1,
+    borderColor: '#D4E8DB',
+  },
+  bodyweightHintText: {
+    flex: 1,
+    fontFamily: fontFamily.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: palette.mintDeep,
+  },
+  setList: {
+    gap: 10,
+  },
+  setCard: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: '#FBFCFA',
+    borderWidth: 1,
+    borderColor: '#E1E7DF',
+  },
+  setCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  setCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  setInputsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bodyweightSetBadge: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D4E8DB',
+    backgroundColor: '#F5FBF7',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    justifyContent: 'center',
+  },
+  bodyweightSetLabel: {
+    fontFamily: fontFamily.medium,
+    fontSize: 11,
+    color: palette.muted,
+  },
+  bodyweightSetValue: {
+    marginTop: 2,
+    fontFamily: fontFamily.bold,
+    fontSize: 14,
+    color: palette.mintDeep,
   },
   setRow: {
     flexDirection: 'row',
