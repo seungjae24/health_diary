@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "HealthDiary",
+    "slug": "health-diary",
+    "scheme": "health-diary",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#2E6C56"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.seungjae.healthdiary"
+    },
+    "android": {
+      "package": "com.seungjae.healthdiary",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2E6C56"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HealthDiary accesses your photos so you can attach meals and workout images.",
+          "cameraPermission": "HealthDiary uses the camera so you can capture meals and workout images."
+        }
+      ],
+      "expo-web-browser",
+      "expo-secure-store"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ca866092-7ff2-40ed-aeb3-b6eb56ff35c5"
+      }
+    }
+  }
+}
