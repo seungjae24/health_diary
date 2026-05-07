@@ -216,7 +216,11 @@ export function ModalSheet({
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalRoot}>
+      <KeyboardAvoidingView
+        style={styles.modalRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
         <Pressable style={styles.modalBackdrop} onPress={onClose} />
         <View style={styles.modalSheetWrap}>
           <View style={styles.modalSheet}>
@@ -247,6 +251,8 @@ export function ModalSheet({
             <ScrollView
               style={styles.modalScroll}
               contentContainerStyle={[styles.modalBody, footer ? styles.modalBodyWithFooter : null]}
+              automaticallyAdjustKeyboardInsets
+              keyboardDismissMode="interactive"
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
@@ -255,7 +261,7 @@ export function ModalSheet({
             {footer ? <View style={styles.modalFooter}>{footer}</View> : null}
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

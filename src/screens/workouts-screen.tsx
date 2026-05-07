@@ -1282,7 +1282,6 @@ ${bodyPartLines}
         </SurfaceCard>
 
         <View style={styles.toolbarRow}>
-          <PrimaryButton label="운동 기록 작성하기" onPress={() => openComposer()} icon="plus" />
           <PrimaryButton label="운동 종류 관리" onPress={() => setActivityManagerVisible(true)} icon="sliders" variant="ghost" />
         </View>
 

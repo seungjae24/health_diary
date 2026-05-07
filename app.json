@@ -19,6 +19,7 @@
     },
     "android": {
       "package": "com.seungjae.healthdiary",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2E6C56"

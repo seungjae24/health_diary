@@ -1,9 +1,8 @@
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { addMonths, subMonths } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useState } from 'react';
-import { Alert, PanResponder, Platform, Pressable, StyleSheet, Text, View, TextInput } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput, useWindowDimensions } from 'react-native';
 
 import { ScreenFrame } from '../components/screen-frame';
 import {
@@ -19,16 +18,13 @@ import { useHealthData } from '../context/health-data-context';
 import { useGlobalUi } from '../context/global-ui-context';
 import { generateAiResponse } from '../services/ai';
 import { fontFamily, palette } from '../theme';
-import { buildWeightCalendar, getLatestWeight, getWeightChange } from '../utils/analytics';
-import { formatLongDate, formatMonthYear, formatTime, formatWeight, makeId, sortByDateDesc, todayDateKey, currentTimeKey } from '../utils/format';
-import { confirmAction } from '../utils/ui';
+import { WeightRecord } from '../types';
+import { getLatestWeight, getWeightChange } from '../utils/analytics';
+import { formatLongDate, formatShortDate, formatTime, formatWeight, makeId, sortByDateDesc, todayDateKey, currentTimeKey } from '../utils/format';
 import { captureImageWithCamera, getPersistedImageUri, pickImageFromLibrary } from '../utils/media';
 import { analyzeImage } from '../services/ai';
 import { ActivityIndicator } from 'react-native';
 
-
-
-const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
 
 function createWeightDraft() {
   return {
@@ -45,13 +41,262 @@ function createWeightDraft() {
   };
 }
 
+const chartHeight = 280;
+const chartTopPadding = 58;
+const chartBottomPadding = 54;
+const chartLeftPadding = 26;
+const chartRightPadding = 76;
+const chartTooltipWidth = 190;
+const chartVisibleSlots = 10;
+
+function getRecordTimestamp(record: WeightRecord) {
+  return `${record.date}T${record.time || '00:00'}`;
+}
+
+function formatChartDate(record: WeightRecord) {
+  return `${record.date.slice(2).replace(/-/g, '.')} ${record.time || ''}`.trim();
+}
+
+type MetricStatus = 'low' | 'standard' | 'high';
+type MetricKind = 'weight' | 'muscle' | 'bodyFat';
+
+function getMetricStatusLabel(status: MetricStatus) {
+  if (status === 'low') return '표준이하';
+  if (status === 'high') return '표준이상';
+  return '표준';
+}
+
+function getWeightStatus(weightKg?: number, heightCm?: string) {
+  const heightM = Number(heightCm) / 100;
+  if (!weightKg || !heightM) return 'standard' as MetricStatus;
+
+  const bmi = weightKg / (heightM * heightM);
+  if (bmi < 18.5) return 'low' as MetricStatus;
+  if (bmi > 22.9) return 'high' as MetricStatus;
+  return 'standard' as MetricStatus;
+}
+
+function getMuscleStatus(muscleKg?: number, heightCm?: string, sex?: string) {
+  const heightM = Number(heightCm) / 100;
+  if (!muscleKg || !heightM) return 'standard' as MetricStatus;
+
+  const standardWeight = 22 * heightM * heightM;
+  const muscleRatio = sex === 'female' ? 0.36 : sex === 'male' ? 0.45 : 0.405;
+  const standardMuscleKg = standardWeight * muscleRatio;
+  const ratio = (muscleKg / standardMuscleKg) * 100;
+  if (ratio < 90) return 'low' as MetricStatus;
+  if (ratio > 110) return 'high' as MetricStatus;
+  return 'standard' as MetricStatus;
+}
+
+function getBodyFatStatus(bodyFatPercentage?: number, sex?: string) {
+  if (typeof bodyFatPercentage !== 'number') return 'standard' as MetricStatus;
+
+  const lowCutoff = sex === 'female' ? 18 : sex === 'male' ? 10 : 14;
+  const highCutoff = sex === 'female' ? 28 : sex === 'male' ? 20 : 24;
+  if (bodyFatPercentage < lowCutoff) return 'low' as MetricStatus;
+  if (bodyFatPercentage > highCutoff) return 'high' as MetricStatus;
+  return 'standard' as MetricStatus;
+}
+
+function getMetricTone(kind: MetricKind, status: MetricStatus) {
+  if (status === 'standard') return 'standard';
+  if (kind === 'bodyFat') return status === 'low' ? 'blue' : 'red';
+  if (kind === 'muscle') return status === 'low' ? 'red' : 'blue';
+  return 'red';
+}
+
+function WeightTrendChart({
+  records,
+  selectedId,
+  onSelect,
+}: {
+  records: WeightRecord[];
+  selectedId?: string | null;
+  onSelect: (record: WeightRecord) => void;
+}) {
+  const { width: windowWidth } = useWindowDimensions();
+  const chronological = React.useMemo(
+    () => [...records].sort((left, right) => getRecordTimestamp(left).localeCompare(getRecordTimestamp(right))),
+    [records],
+  );
+
+  if (!chronological.length) {
+    return (
+      <SurfaceCard style={styles.chartCard}>
+        <EmptyState title="그래프에 표시할 기록이 없습니다" body="체중을 추가하면 시간순 그래프로 변화가 표시됩니다." />
+      </SurfaceCard>
+    );
+  }
+
+  const selectedRecord = chronological.find((record) => record.id === selectedId) ?? chronological[chronological.length - 1];
+  const values = chronological.map((record) => record.valueKg);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const spread = Math.max(rawMax - rawMin, 1);
+  const minValue = Math.floor((rawMin - spread * 0.2) * 2) / 2;
+  const maxValue = Math.ceil((rawMax + spread * 0.2) * 2) / 2;
+  const valueRange = Math.max(maxValue - minValue, 1);
+  const plotHeight = chartHeight - chartTopPadding - chartBottomPadding;
+  const chartOuterPadding = 36;
+  const screenHorizontalPadding = 40;
+  const viewportWidth = Math.max(300, windowWidth - screenHorizontalPadding - chartOuterPadding);
+  const pointGap = (viewportWidth - chartLeftPadding - chartRightPadding) / (chartVisibleSlots - 1);
+  const isScrollable = chronological.length > chartVisibleSlots;
+  const plotWidth = isScrollable
+    ? chartLeftPadding + chartRightPadding + Math.max(chronological.length - 1, 1) * pointGap
+    : viewportWidth;
+  const selectedIndex = chronological.findIndex((record) => record.id === selectedRecord.id);
+  const selectedX = chartLeftPadding + Math.max(selectedIndex, 0) * pointGap;
+
+  const points = chronological.map((record, index) => {
+    const x = chartLeftPadding + index * pointGap;
+    const y = chartTopPadding + (1 - (record.valueKg - minValue) / valueRange) * plotHeight;
+    return { record, x, y };
+  });
+  const lineSegments = points.slice(0, -1).map((point, index) => {
+    const next = points[index + 1];
+    const dx = next.x - point.x;
+    const dy = next.y - point.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+
+    return {
+      key: `${point.x}-${point.y}-${index}`,
+      left: (point.x + next.x) / 2 - length / 2,
+      top: (point.y + next.y) / 2 - 1,
+      width: length,
+      rotate: `${Math.atan2(dy, dx)}rad`,
+    };
+  });
+  const ticks = [maxValue, minValue + valueRange * 0.66, minValue + valueRange * 0.33, minValue];
+  const chartBody = (
+    <View style={[styles.chartCanvas, { width: plotWidth }]}>
+      <View
+        style={[
+          styles.selectedTooltip,
+          {
+            left: Math.min(
+              Math.max(selectedX - chartTooltipWidth / 2, 6),
+              plotWidth - chartRightPadding - chartTooltipWidth,
+            ),
+          },
+        ]}
+      >
+        <Text style={styles.selectedTooltipDate}>{formatChartDate(selectedRecord)}</Text>
+        <Text style={styles.selectedTooltipValue}>{formatWeight(selectedRecord.valueKg)}</Text>
+      </View>
+
+      {ticks.map((tick) => {
+        const y = chartTopPadding + (1 - (tick - minValue) / valueRange) * plotHeight;
+        return (
+          <React.Fragment key={tick.toFixed(2)}>
+            <View style={[styles.chartGridLine, { top: y }]} />
+            <Text style={[styles.chartYAxisLabel, { top: y - 9 }]}>{tick.toFixed(1)}</Text>
+          </React.Fragment>
+        );
+      })}
+
+      {selectedRecord ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.selectedGuide,
+            {
+              left: selectedX,
+              top: chartTopPadding,
+              height: plotHeight,
+            },
+          ]}
+        />
+      ) : null}
+
+      {lineSegments.map((segment) => (
+        <View
+          key={segment.key}
+          style={[
+            styles.chartLineSegment,
+            {
+              left: segment.left,
+              top: segment.top,
+              width: segment.width,
+              transform: [{ rotate: segment.rotate }],
+            },
+          ]}
+        />
+      ))}
+
+      {points.map((point, index) => {
+        const isSelected = point.record.id === selectedRecord.id;
+        const shouldLabel = chronological.length <= 6 || index === 0 || index === chronological.length - 1 || isSelected || index % 2 === 0;
+        return (
+          <React.Fragment key={point.record.id}>
+            <Pressable
+              onPress={() => onSelect(point.record)}
+              style={[
+                styles.chartDotButton,
+                {
+                  left: point.x - 18,
+                  top: point.y - 18,
+                },
+              ]}
+              hitSlop={8}
+            >
+              <View style={[styles.chartDot, isSelected && styles.chartDotSelected]} />
+            </Pressable>
+            {shouldLabel ? (
+              <Text
+                style={[
+                  styles.chartXLabel,
+                  isSelected && styles.chartXLabelSelected,
+                  {
+                    left: point.x - 38,
+                    top: point.y + 26,
+                  },
+                ]}
+              >
+                {formatShortDate(point.record.date)}
+              </Text>
+            ) : null}
+          </React.Fragment>
+        );
+      })}
+    </View>
+  );
+
+  return (
+    <SurfaceCard style={styles.chartCard}>
+      <View style={styles.chartHeader}>
+        <View>
+          <Text style={styles.chartTitle}>체중 변화</Text>
+          <Text style={styles.chartCaption}>좌우로 밀어서 시간순 기록을 보고 점을 누르면 위 요약이 바뀝니다.</Text>
+        </View>
+        <View style={styles.chartCountBadge}>
+          <Text style={styles.chartCountText}>{chronological.length}건</Text>
+        </View>
+      </View>
+
+      <View style={styles.chartViewport}>
+        {isScrollable ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentOffset={{ x: Math.max(plotWidth - viewportWidth, 0), y: 0 }}
+          >
+            {chartBody}
+          </ScrollView>
+        ) : chartBody}
+      </View>
+    </SurfaceCard>
+  );
+}
+
 export function WeightsScreen({ route, navigation }: any) {
-  const { store, addWeight, deleteWeight } = useHealthData();
+  const { store, addWeight } = useHealthData();
   const { openAddMenu } = useGlobalUi();
-  const [focusMonth, setFocusMonth] = useState(new Date());
   const [query, setQuery] = useState('');
   const [composerVisible, setComposerVisible] = useState(false);
-  const [selectedWeightDate, setSelectedWeightDate] = useState<string | null>(null);
+  const [selectedWeightId, setSelectedWeightId] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [draft, setDraft] = useState(createWeightDraft());
   const [summaryPeriod, setSummaryPeriod] = useState<'today' | 'week' | 'month'>('today');
@@ -97,28 +342,20 @@ export function WeightsScreen({ route, navigation }: any) {
     periodLatest && periodOldest && typeof periodLatest.skeletalMuscleMassKg === 'number' && typeof periodOldest.skeletalMuscleMassKg === 'number'
       ? periodLatest.skeletalMuscleMassKg - periodOldest.skeletalMuscleMassKg
       : null;
-  const calendar = buildWeightCalendar(focusMonth, store.weights);
   const filteredWeights = sortByDateDesc(store.weights).filter((record) => {
     const haystack = `${record.date} ${record.valueKg} ${record.note ?? ''}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
-  const selectedDateWeights = selectedWeightDate
-    ? sortByDateDesc(store.weights).filter((record) => record.date === selectedWeightDate)
-    : [];
-  const calendarSwipe = React.useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 14 && Math.abs(gesture.dy) < 20,
-        onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx > 40) {
-            setFocusMonth((current) => subMonths(current, 1));
-          } else if (gesture.dx < -40) {
-            setFocusMonth((current) => addMonths(current, 1));
-          }
-        },
-      }),
-    [],
-  );
+  const selectedWeight = selectedWeightId
+    ? store.weights.find((record) => record.id === selectedWeightId) ?? null
+    : null;
+  const displayWeight = selectedWeight ?? latestWeight;
+  const weightStatus = getWeightStatus(displayWeight?.valueKg, store.profile.heightCm);
+  const muscleStatus = getMuscleStatus(displayWeight?.skeletalMuscleMassKg, store.profile.heightCm, store.profile.sex);
+  const bodyFatStatus = getBodyFatStatus(displayWeight?.bodyFatPercentage, store.profile.sex);
+  const weightTone = getMetricTone('weight', weightStatus);
+  const muscleTone = getMetricTone('muscle', muscleStatus);
+  const bodyFatTone = getMetricTone('bodyFat', bodyFatStatus);
 
   async function openComposer(initialData?: any, forcedImage?: string) {
     const draftBase = createWeightDraft();
@@ -248,10 +485,6 @@ export function WeightsScreen({ route, navigation }: any) {
     setComposerVisible(false);
   }
 
-  function confirmDelete(id: string) {
-    confirmAction('기록 삭제', '이 체중 기록을 정말 삭제할까요? 삭제 후에는 복구할 수 없습니다.', () => deleteWeight(id));
-  }
-
   const latest = recentWeights[0];
   const previous = recentWeights[1];
   const older = recentWeights[2];
@@ -347,7 +580,7 @@ ${lines}`,
     <>
       <ScreenFrame
         title="Weights"
-        subtitle="매일 조금씩 달라지는 체중의 변화를 기록해 보세요. 달력이 변화의 흐름을 보여줍니다."
+        subtitle="매일 조금씩 달라지는 체중의 변화를 기록해 보세요. 그래프가 시간순 흐름을 보여줍니다."
         accent={palette.coral}
         searchValue={query}
         onSearchChange={setQuery}
@@ -376,133 +609,81 @@ ${lines}`,
           <Text style={styles.summaryBody}>{coachText || (bodyComment ? bodyComment.headline : '체중 흐름을 정리하고 있습니다.')}</Text>
         </SurfaceCard>
 
-        <View {...calendarSwipe.panHandlers}>
-        <SurfaceCard style={styles.calendarCard}>
-          <View style={styles.monthHeader}>
-            <View style={styles.monthHeading}>
-              <Text style={styles.monthLabel}>{formatMonthYear(focusMonth)}</Text>
-              <Text style={styles.monthCaption}>좌우로 밀어 월을 넘기고 날짜별 흐름을 확인하세요.</Text>
+        <View style={styles.bodySummaryHeader}>
+          <Text style={styles.bodySummaryTitle}>인바디검사 요약</Text>
+          {displayWeight ? (
+            <Text style={styles.bodySummaryDate}>
+              {formatChartDate(displayWeight)}
+            </Text>
+          ) : null}
+        </View>
+        <View style={styles.bodyMetricCards}>
+          <Pressable
+            onPress={() => displayWeight && setSelectedWeightId(displayWeight.id)}
+            style={[
+              styles.bodyMetricCard,
+              styles.bodyMetricCardActive,
+              weightTone === 'red' && styles.bodyMetricCardRed,
+            ]}
+          >
+            <Text style={styles.bodyMetricLabel}>체중 (kg)</Text>
+            <Text style={styles.bodyMetricValue}>{displayWeight ? displayWeight.valueKg.toFixed(1) : '-'}</Text>
+            <View style={[
+              styles.bodyMetricBadge,
+              weightTone === 'red' && styles.bodyMetricBadgeRed,
+            ]}>
+              <Text style={styles.bodyMetricBadgeText}>{getMetricStatusLabel(weightStatus)}</Text>
             </View>
-            <View style={styles.monthActions}>
-              <Pressable onPress={() => setFocusMonth((current) => subMonths(current, 1))} style={styles.monthButton}>
-                <Feather name="chevron-left" size={18} color={palette.ink} />
-              </Pressable>
-              <Pressable onPress={() => setFocusMonth((current) => addMonths(current, 1))} style={styles.monthButton}>
-                <Feather name="chevron-right" size={18} color={palette.ink} />
-              </Pressable>
+          </Pressable>
+          <View style={[
+            styles.bodyMetricCard,
+            muscleTone === 'red' && styles.bodyMetricCardRed,
+            muscleTone === 'blue' && styles.bodyMetricCardBlue,
+          ]}>
+            <Text style={styles.bodyMetricLabel}>골격근량 (kg)</Text>
+            <Text style={styles.bodyMetricValue}>
+              {typeof displayWeight?.skeletalMuscleMassKg === 'number' ? displayWeight.skeletalMuscleMassKg.toFixed(1) : '-'}
+            </Text>
+            <View style={[
+              styles.bodyMetricBadge,
+              muscleTone === 'red' && styles.bodyMetricBadgeRed,
+              muscleTone === 'blue' && styles.bodyMetricBadgeBlue,
+            ]}>
+              <Text style={styles.bodyMetricBadgeText}>{getMetricStatusLabel(muscleStatus)}</Text>
             </View>
           </View>
-
-          <View style={styles.weekdayRow}>
-            {weekdayLabels.map((label) => (
-              <Text key={label} style={styles.weekdayLabel}>
-                {label}
-              </Text>
-            ))}
+          <View style={[
+            styles.bodyMetricCard,
+            bodyFatTone === 'red' && styles.bodyMetricCardRed,
+            bodyFatTone === 'blue' && styles.bodyMetricCardBlue,
+          ]}>
+            <Text style={styles.bodyMetricLabel}>체지방률 (%)</Text>
+            <Text style={styles.bodyMetricValue}>
+              {typeof displayWeight?.bodyFatPercentage === 'number' ? displayWeight.bodyFatPercentage.toFixed(1) : '-'}
+            </Text>
+            <View style={[
+              styles.bodyMetricBadge,
+              bodyFatTone === 'red' && styles.bodyMetricBadgeRed,
+              bodyFatTone === 'blue' && styles.bodyMetricBadgeBlue,
+            ]}>
+              <Text style={styles.bodyMetricBadgeText}>{getMetricStatusLabel(bodyFatStatus)}</Text>
+            </View>
           </View>
-
-          <View style={styles.calendarGrid}>
-            {calendar.map((day) => (
-              <Pressable
-                key={day.key}
-                onPress={() => {
-                  if (day.record) {
-                    setSelectedWeightDate(day.key);
-                  }
-                }}
-                style={[
-                  styles.weightDayCell,
-                  !day.inMonth && styles.dayCellMuted,
-                  day.record && styles.weightDayCellActive,
-                ]}
-              >
-                <Text style={[styles.dayNumber, !day.inMonth && styles.dayNumberMuted]}>
-                  {day.dayOfMonth}
-                </Text>
-                <View
-                  style={[
-                    styles.weightDayIndicator,
-                    !day.record && styles.weightDayIndicatorIdle,
-                  ]}
-                />
-              </Pressable>
-            ))}
-          </View>
-        </SurfaceCard>
         </View>
 
+        <WeightTrendChart
+          records={filteredWeights}
+          selectedId={selectedWeightId}
+          onSelect={(record) => setSelectedWeightId(record.id)}
+        />
+
         <EmptyState
-          title={filteredWeights.length ? '달력에서 날짜를 눌러 체중 보기' : '체중 기록이 아직 없습니다'}
-          body={filteredWeights.length ? '메인 화면에서는 달력만 보고, 상세 기록은 날짜를 눌렀을 때만 열리도록 정리했어요.' : '체중을 추가하면 날짜별로 달력에서 바로 확인할 수 있어요.'}
+          title={filteredWeights.length ? '그래프의 점을 눌러 요약 바꾸기' : '체중 기록이 아직 없습니다'}
+          body={filteredWeights.length ? '선택한 시간의 체중, 골격근량, 체지방률이 위 카드에 바로 표시됩니다.' : '체중을 추가하면 시간순 그래프로 바로 확인할 수 있어요.'}
           actionLabel="기록 추가"
           onAction={openAddMenu}
         />
       </ScreenFrame>
-
-      <ModalSheet
-        visible={Boolean(selectedWeightDate)}
-        title={selectedWeightDate ? `${formatLongDate(selectedWeightDate)} 체중` : '체중 기록'}
-        subtitle="해당 날짜의 체중과 체성분 기록만 모아서 볼 수 있어요."
-        onClose={() => setSelectedWeightDate(null)}
-      >
-        {selectedDateWeights.length ? (
-          selectedDateWeights.map((record) => (
-            <SurfaceCard key={record.id} style={styles.weightRow}>
-              <View style={styles.weightItemInfo}>
-                <View style={styles.recordDateRow}>
-                  <Text style={styles.weightRowDate}>{formatLongDate(record.date)}</Text>
-                  {record.time && <Text style={styles.recordTime}>{formatTime(record.time)}</Text>}
-                </View>
-                <Text style={styles.weightRowValue}>{formatWeight(record.valueKg)}</Text>
-                {(record.bmi || record.bodyFatPercentage || record.skeletalMuscleMassKg || record.bodyWaterKg || record.bodyFatMassKg) && (
-                  <View style={styles.metricRowSmall}>
-                    {record.bmi && <Text style={styles.recordMetricSmall}>BMI {record.bmi}</Text>}
-                    {record.bodyFatPercentage && <Text style={styles.recordMetricSmall}>체지방 {record.bodyFatPercentage}%</Text>}
-                    {record.skeletalMuscleMassKg && <Text style={styles.recordMetricSmall}>골격근량 {record.skeletalMuscleMassKg}kg</Text>}
-                    {record.bodyWaterKg && <Text style={styles.recordMetricSmall}>체수분 {record.bodyWaterKg}kg</Text>}
-                    {record.bodyFatMassKg && <Text style={styles.recordMetricSmall}>체지방량 {record.bodyFatMassKg}kg</Text>}
-                  </View>
-                )}
-              </View>
-              <View style={styles.weightItemNoteWrap}>
-                <Text style={styles.weightRowNote} numberOfLines={3}>{record.note || '메모 없음'}</Text>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                  <Pressable
-                    onPress={() => {
-                      setSelectedWeightDate(null);
-                      setDraft({
-                        ...(record as any),
-                        time: record.time || '',
-                        valueKg: String(record.valueKg),
-                        bmi: record.bmi ? String(record.bmi) : '',
-                        bodyFatPercentage: record.bodyFatPercentage ? String(record.bodyFatPercentage) : '',
-                        skeletalMuscleMassKg: record.skeletalMuscleMassKg ? String(record.skeletalMuscleMassKg) : '',
-                        bodyWaterKg: record.bodyWaterKg ? String(record.bodyWaterKg) : '',
-                        bodyFatMassKg: record.bodyFatMassKg ? String(record.bodyFatMassKg) : '',
-                        note: record.note || '',
-                      });
-                      setComposerVisible(true);
-                    }}
-                    hitSlop={12}
-                    style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
-                  >
-                    <Feather name="edit-2" size={18} color={palette.muted} />
-                  </Pressable>
-                  <Pressable
-                    onPress={() => confirmDelete(record.id)}
-                    hitSlop={12}
-                    style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
-                  >
-                    <Feather name="trash-2" size={18} color={palette.coral} />
-                  </Pressable>
-                </View>
-              </View>
-            </SurfaceCard>
-          ))
-        ) : (
-          <EmptyState title="기록 없음" body="이 날짜에는 체중 기록이 없어요." />
-        )}
-      </ModalSheet>
 
       <ModalSheet
         visible={composerVisible}
@@ -670,10 +851,217 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: palette.ink,
   },
+  bodySummaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: 12,
+  },
+  bodySummaryTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 24,
+    color: palette.ink,
+  },
+  bodySummaryDate: {
+    flexShrink: 0,
+    fontFamily: fontFamily.medium,
+    fontSize: 12,
+    color: palette.muted,
+  },
+  bodyMetricCards: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  bodyMetricCard: {
+    flex: 1,
+    minHeight: 132,
+    borderRadius: 22,
+    paddingHorizontal: 10,
+    paddingVertical: 15,
+    backgroundColor: palette.paper,
+    borderWidth: 1,
+    borderColor: palette.stroke,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  bodyMetricCardActive: {
+    borderWidth: 3,
+    borderColor: '#67738A',
+  },
+  bodyMetricCardRed: {
+    borderColor: '#EE6D86',
+    backgroundColor: '#FFF6F8',
+  },
+  bodyMetricCardBlue: {
+    borderColor: '#69AEEB',
+    backgroundColor: '#F2F8FF',
+  },
+  bodyMetricLabel: {
+    textAlign: 'center',
+    fontFamily: fontFamily.bold,
+    fontSize: 13,
+    color: palette.muted,
+  },
+  bodyMetricValue: {
+    fontFamily: fontFamily.bold,
+    fontSize: 34,
+    color: palette.ink,
+  },
+  bodyMetricBadge: {
+    alignSelf: 'stretch',
+    borderRadius: 999,
+    paddingVertical: 8,
+    backgroundColor: palette.mint,
+  },
+  bodyMetricBadgeRed: {
+    backgroundColor: palette.coral,
+  },
+  bodyMetricBadgeBlue: {
+    backgroundColor: '#4C9DE4',
+  },
+  bodyMetricBadgeText: {
+    textAlign: 'center',
+    fontFamily: fontFamily.bold,
+    fontSize: 13,
+    color: palette.paper,
+  },
   calendarCard: {
     gap: 14,
     backgroundColor: '#FFFDF7',
     borderColor: '#F1E2C8',
+  },
+  chartCard: {
+    gap: 14,
+    backgroundColor: '#FFFDF7',
+    borderColor: '#F1E2C8',
+    paddingHorizontal: 0,
+    overflow: 'hidden',
+  },
+  chartHeader: {
+    paddingHorizontal: 18,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  chartTitle: {
+    fontFamily: fontFamily.bold,
+    fontSize: 20,
+    color: palette.ink,
+  },
+  chartCaption: {
+    marginTop: 4,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: palette.muted,
+  },
+  chartCountBadge: {
+    borderRadius: 999,
+    backgroundColor: '#F5E4D7',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  chartCountText: {
+    fontFamily: fontFamily.bold,
+    fontSize: 12,
+    color: palette.coral,
+  },
+  chartViewport: {
+    paddingHorizontal: 18,
+  },
+  chartCanvas: {
+    height: chartHeight,
+    position: 'relative',
+  },
+  chartGridLine: {
+    position: 'absolute',
+    left: 0,
+    right: chartRightPadding - 10,
+    height: 1,
+    backgroundColor: '#EFE7D8',
+  },
+  chartYAxisLabel: {
+    position: 'absolute',
+    right: 4,
+    width: 44,
+    textAlign: 'right',
+    fontFamily: fontFamily.medium,
+    fontSize: 12,
+    color: palette.muted,
+  },
+  chartLineSegment: {
+    position: 'absolute',
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: '#CFD5D2',
+  },
+  chartDotButton: {
+    position: 'absolute',
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 4,
+  },
+  chartDot: {
+    width: 15,
+    height: 15,
+    borderRadius: 999,
+    backgroundColor: palette.mint,
+    borderWidth: 3,
+    borderColor: palette.paper,
+  },
+  chartDotSelected: {
+    width: 19,
+    height: 19,
+    backgroundColor: palette.coral,
+    borderColor: '#FFF3EC',
+  },
+  chartXLabel: {
+    position: 'absolute',
+    width: 76,
+    textAlign: 'center',
+    fontFamily: fontFamily.medium,
+    fontSize: 11,
+    color: palette.muted,
+  },
+  chartXLabelSelected: {
+    color: palette.ink,
+    fontFamily: fontFamily.bold,
+  },
+  selectedGuide: {
+    position: 'absolute',
+    width: 2,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    borderColor: '#C9C9C9',
+  },
+  selectedTooltip: {
+    position: 'absolute',
+    top: 0,
+    zIndex: 5,
+    width: chartTooltipWidth,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    backgroundColor: '#F3F1F6',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selectedTooltipDate: {
+    flexShrink: 0,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    color: palette.muted,
+  },
+  selectedTooltipValue: {
+    flexShrink: 0,
+    fontFamily: fontFamily.bold,
+    fontSize: 14,
+    color: palette.ink,
   },
   coachCard: {
     gap: 10,
